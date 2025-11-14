@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-from numpy import array
 from sklearn.naive_bayes import GaussianNB, MultinomialNB, BernoulliNB
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score
@@ -29,25 +28,49 @@ estimators = {
     "BernoulliNB": BernoulliNB(),
 }
 
-xvalues, yvalues = [], []
+xvalues = []
+acc_values = []
+prec_values = []
+rec_values = []
+
 best_model, best_score, best_name = None, 0, ""
 
 for name, clf in estimators.items():
     clf.fit(trnX, trnY)
     y_pred = clf.predict(tstX)
+
     acc = accuracy_score(tstY, y_pred)
+    prec = precision_score(tstY, y_pred, average="weighted", zero_division=0)
+    rec = recall_score(tstY, y_pred, average="weighted", zero_division=0)
+
     xvalues.append(name)
-    yvalues.append(acc)
+    acc_values.append(acc)
+    prec_values.append(prec)
+    rec_values.append(rec)
+
     if acc > best_score:
         best_model = clf
         best_score = acc
         best_name = name
-    print(f"{name} -> Accuracy: {acc:.4f}")
 
-# Plot hyperparameter study
+    print(f"{name} -> Accuracy: {acc:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}")
+
+# Plot Accuracy
 figure()
-plot_bar_chart(xvalues, yvalues, title="Naive Bayes Models", ylabel="Accuracy", percentage=True)
-savefig("images/nb_hyperparameters.png")
+plot_bar_chart(xvalues, acc_values, title="Naive Bayes Accuracy", ylabel="Accuracy", percentage=True)
+savefig("images/nb_accuracy.png")
+close()
+
+# Plot Precision
+figure()
+plot_bar_chart(xvalues, prec_values, title="Naive Bayes Precision", ylabel="Precision", percentage=True)
+savefig("images/nb_precision.png")
+close()
+
+# Plot Recall
+figure()
+plot_bar_chart(xvalues, rec_values, title="Naive Bayes Recall", ylabel="Recall", percentage=True)
+savefig("images/nb_recall.png")
 close()
 
 # Best model performance
@@ -55,13 +78,18 @@ y_trn_pred = best_model.predict(trnX)
 y_tst_pred = best_model.predict(tstX)
 
 metrics = {
-    "Accuracy": (accuracy_score, y_trn_pred, y_tst_pred),
-    "Precision": (precision_score, y_trn_pred, y_tst_pred),
-    "Recall": (recall_score, y_trn_pred, y_tst_pred)
+    "Accuracy": accuracy_score,
+    "Precision": precision_score,
+    "Recall": recall_score
 }
 
 print(f"\nBest model: {best_name}")
-for metric, (func, trn_pred, tst_pred) in metrics.items():
-    trn_val = func(trnY, trn_pred)
-    tst_val = func(tstY, tst_pred)
+for metric, func in metrics.items():
+    if metric == "Accuracy":
+        trn_val = func(trnY, y_trn_pred)
+        tst_val = func(tstY, y_tst_pred)
+    else:
+        trn_val = func(trnY, y_trn_pred, average="weighted", zero_division=0)
+        tst_val = func(tstY, y_tst_pred, average="weighted", zero_division=0)
+
     print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
