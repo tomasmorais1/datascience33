@@ -13,143 +13,121 @@ from dslabs_functions import plot_bar_chart, plot_confusion_matrix
 print("=== STARTING SCRIPT ===\n")
 
 # ================================================================
-# 1. LOAD TRAIN/TEST FROM PREVIOUS SPLIT
+# 1. LOAD TRAIN/TEST
 # ================================================================
-print("[1/7] Loading train/test datasets from previous split...")
 train = read_csv("prepared_data/train_imputed.csv")
 test  = read_csv("prepared_data/test_imputed.csv")
-print(f"Train: {train.shape} | Test: {test.shape}\n")
 
 target = "Cancelled"
+print("[1] Loaded:", train.shape, test.shape)
 
-# Encode target
-print("Encoding target variable...")
-
-# Como os dados são Booleanos (False/True), basta converter para int.
-# False torna-se 0
-# True torna-se 1
+# ================================================================
+# 2. TARGET ENCODING
+# ================================================================
+print("[2] Encoding target...")
 train[target] = train[target].astype(int)
 test[target]  = test[target].astype(int)
-
 print("Target encoded.\n")
 
 # ================================================================
-# 2. CONVERT DATETIME COLUMNS
+# 3. CONVERT DATETIME COLUMNS
 # ================================================================
-print("[2/7] Converting datetime columns...")
+print("[3] Converting datetime columns...")
 vars_types = get_variable_types(train)
 
-if len(vars_types["date"]) > 0:
+if vars_types["date"]:
     for col in vars_types["date"]:
-        print(f"  → Converting {col} into numeric components...")
-        for df_ in [train, test]:
-            df_[col] = pd.to_datetime(df_[col], errors="coerce")
-            df_[f"{col}_year"] = df_[col].dt.year
-            df_[f"{col}_month"] = df_[col].dt.month
-            df_[f"{col}_day"] = df_[col].dt.day
-            df_[f"{col}_weekday"] = df_[col].dt.weekday
-            df_[f"{col}_hour"] = df_[col].dt.hour
-    print("Dropping original datetime columns:", vars_types["date"])
+        print(f"  → Expanding {col}...")
+        for df in (train, test):
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+            df[f"{col}_year"] = df[col].dt.year
+            df[f"{col}_month"] = df[col].dt.month
+            df[f"{col}_day"] = df[col].dt.day
+            df[f"{col}_weekday"] = df[col].dt.weekday
+            df[f"{col}_hour"] = df[col].dt.hour
+
     train = train.drop(columns=vars_types["date"])
     test  = test.drop(columns=vars_types["date"])
-else:
-    print("No datetime columns found.")
-print("Datetime conversion complete.\n")
+
+print("Datetime processed.\n")
 
 vars_types = get_variable_types(train)
 print("Variable types detected:", vars_types, "\n")
 
 # ================================================================
-# 3. APPROACH A — ORDINAL ENCODING
+# 4. APPROACH A — ORDINAL ENCODING
 # ================================================================
-print("[3/7] Applying ORDINAL encoding (fully numeric for Naive Bayes)...")
+print("[4] Performing ORDINAL encoding...")
 
 train_A = train.copy()
 test_A  = test.copy()
-ordinal_encoding = {}
 
-for var in vars_types["symbolic"]:
-    if var == target:
+for col in vars_types["symbolic"]:
+    if col == target:
         continue
-    unique_vals = sorted(train_A[var].dropna().unique())
-    mapping = {v: i for i, v in enumerate(unique_vals)}
-    ordinal_encoding[var] = mapping
-    train_A[var] = train_A[var].map(mapping)
-    test_A[var]  = test_A[var].map(mapping).fillna(len(mapping))
-
-object_cols = train_A.select_dtypes(include='object').columns.tolist()
-for col in object_cols:
     unique_vals = sorted(train_A[col].dropna().unique())
     mapping = {v: i for i, v in enumerate(unique_vals)}
+
     train_A[col] = train_A[col].map(mapping)
-    test_A[col]  = test_A[col].map(mapping)
+    test_A[col]  = test_A[col].map(mapping).fillna(len(mapping))
 
-print("Ordinal dataset ready for Naive Bayes.\n")
-
-# ================================================================
-# 4. APPROACH B — ONE-HOT ENCODING
-# ================================================================
-print("[4/7] Applying ONE-HOT encoding (train/test consistent)...")
-vars_to_dummies = [v for v in vars_types["symbolic"] if v != target]
-
-enc = OneHotEncoder(handle_unknown="ignore", sparse_output=False, dtype="float")
-X_train_dummies = enc.fit_transform(train[vars_to_dummies])
-X_test_dummies  = enc.transform(test[vars_to_dummies])
-
-train_B = concat([train.drop(vars_to_dummies, axis=1),
-                  DataFrame(X_train_dummies, columns=enc.get_feature_names_out(vars_to_dummies), index=train.index)],
-                 axis=1)
-test_B = concat([test.drop(vars_to_dummies, axis=1),
-                 DataFrame(X_test_dummies, columns=enc.get_feature_names_out(vars_to_dummies), index=test.index)],
-                axis=1)
-
-object_cols_B = train_B.select_dtypes(include='object').columns.tolist()
-for col in object_cols_B:
-    unique_vals = sorted(train_B[col].dropna().unique())
-    mapping = {v: i for i, v in enumerate(unique_vals)}
-    train_B[col] = train_B[col].map(mapping)
-    test_B[col]  = test_B[col].map(mapping)
-
-
-# --- SUBSTITUI O BLOCO FINAL DA SECÇÃO 4 POR ISTO ---
-
-# 1. Converter tudo para numérico no Pandas e preencher NaNs com 0
-# (Isto garante que textos viram NaN e depois 0)
-train_B_numeric = train_B.drop(target, axis=1).apply(pd.to_numeric, errors='coerce').fillna(0)
-test_B_numeric = test_B.drop(target, axis=1).apply(pd.to_numeric, errors='coerce').fillna(0)
-
-# 2. Debug: Verificar se sobrou alguma coluna teimosa (Opcional, mas útil)
-non_numeric_cols = train_B_numeric.select_dtypes(include=['object']).columns
-if len(non_numeric_cols) > 0:
-    print(f"⚠️ AVISO: Colunas ainda detetadas como objeto: {non_numeric_cols}")
-
-# 3. Criação da matriz esparsa FORÇANDO o tipo float
-# O .astype(float) aqui é o segredo para corrigir o erro 'dtype O'
-X_train_B_sparse = csr_matrix(train_B_numeric.values.astype(float))
-X_test_B_sparse  = csr_matrix(test_B_numeric.values.astype(float))
-
-print("One-hot encoding completed.\n")
-
-print("One-hot encoding completed.\n")
+print("Ordinal encoding complete.\n")
 
 # ================================================================
-# 5. TRAIN MODELS
+# 5. APPROACH B — ONE-HOT ENCODING
 # ================================================================
-print("[5/7] Training Naive Bayes + KNN on both datasets...\n")
+print("[5] Performing ONE-HOT encoding...")
 
-def evaluate(train_df, test_df, label_col, knn_sparse=None):
-    X_train = train_df.drop(label_col, axis=1)
-    y_train = train_df[label_col]
-    X_test = test_df.drop(label_col, axis=1)
-    y_test = test_df[label_col]
+symbolic_cols = [v for v in vars_types["symbolic"] if v != target]
+
+enc = OneHotEncoder(handle_unknown="ignore", sparse_output=False, dtype=float)
+train_dums = enc.fit_transform(train[symbolic_cols])
+test_dums  = enc.transform(test[symbolic_cols])
+
+train_B = concat([
+    train.drop(columns=symbolic_cols),
+    DataFrame(train_dums, columns=enc.get_feature_names_out(symbolic_cols), index=train.index)
+], axis=1)
+
+test_B = concat([
+    test.drop(columns=symbolic_cols),
+    DataFrame(test_dums, columns=enc.get_feature_names_out(symbolic_cols), index=test.index)
+], axis=1)
+
+# Convert any remaining object columns to category codes
+for df in (train_B, test_B):
+    for col in df.select_dtypes(include="object"):
+        df[col] = df[col].astype("category").cat.codes
+
+# SciPy sparse requires numeric types
+if "Diverted" in train_B.columns:
+    train_B["Diverted"] = train_B["Diverted"].astype(int)
+    test_B["Diverted"]  = test_B["Diverted"].astype(int)
+
+# Build sparse matrices
+X_train_B_sparse = csr_matrix(train_B.drop(columns=[target]).values)
+X_test_B_sparse  = csr_matrix(test_B.drop(columns=[target]).values)
+
+print("One-hot encoding complete.\n")
+
+# ================================================================
+# 6. MODEL EVALUATION
+# ================================================================
+print("[6] Evaluating Naive Bayes & KNN...\n")
+
+def evaluate(df_train, df_test, knn_sparse=None):
+    X_train, y_train = df_train.drop(columns=[target]), df_train[target]
+    X_test,  y_test  = df_test.drop(columns=[target]),  df_test[target]
 
     results = {}
+
+    # NB
     nb = GaussianNB()
     nb.fit(X_train, y_train)
     pred_nb = nb.predict(X_test)
-    results["NB_accuracy"] = accuracy_score(y_test, pred_nb)
-    results["NB_predictions"] = pred_nb
+    acc_nb = accuracy_score(y_test, pred_nb)
 
+    # KNN
     knn = KNeighborsClassifier(n_neighbors=5, n_jobs=-1)
     if knn_sparse is None:
         knn.fit(X_train, y_train)
@@ -157,83 +135,84 @@ def evaluate(train_df, test_df, label_col, knn_sparse=None):
     else:
         knn.fit(knn_sparse[0], y_train)
         pred_knn = knn.predict(knn_sparse[1])
-    results["KNN_accuracy"] = accuracy_score(y_test, pred_knn)
-    results["KNN_predictions"] = pred_knn
 
-    return results, y_test
+    acc_knn = accuracy_score(y_test, pred_knn)
 
-resA, y_testA = evaluate(train_A, test_A, target)
-resB, y_testB = evaluate(train_B, test_B, target, knn_sparse=(X_train_B_sparse, X_test_B_sparse))
+    return acc_nb, acc_knn, pred_nb, pred_knn, y_test
+
+
+# Evaluate both encoding strategies
+accA_nb, accA_knn, predA_nb, predA_knn, yA_test = evaluate(train_A, test_A)
+accB_nb, accB_knn, predB_nb, predB_knn, yB_test = evaluate(
+    train_B, test_B, knn_sparse=(X_train_B_sparse, X_test_B_sparse)
+)
+
+print(f"Ordinal Accuracies  →  NB={accA_nb:.4f}, KNN={accA_knn:.4f}")
+print(f"One-Hot Accuracies →  NB={accB_nb:.4f}, KNN={accB_knn:.4f}\n")
 
 # ================================================================
-# 6. SELECT BEST APPROACH AND SAVE DATASETS
+# 7. SELECT BEST APPROACH
 # ================================================================
-best = "A" if max(resA["NB_accuracy"], resA["KNN_accuracy"]) > \
-               max(resB["NB_accuracy"], resB["KNN_accuracy"]) else "B"
-print(f"\n>>> BEST APPROACH IS: {best}\n")
+best = "A" if max(accA_nb, accA_knn) > max(accB_nb, accB_knn) else "B"
+print(f">>> BEST APPROACH = {best}\n")
 
 if best == "A":
     train_best, test_best = train_A, test_A
+    pred_nb, pred_knn, y_true = predA_nb, predA_knn, yA_test
 else:
     train_best, test_best = train_B, test_B
+    pred_nb, pred_knn, y_true = predB_nb, predB_knn, yB_test
 
-os.makedirs("prepared_data", exist_ok=True)
 train_best.to_csv("prepared_data/train_encoded.csv", index=False)
 test_best.to_csv("prepared_data/test_encoded.csv", index=False)
-print("Saved best encoded datasets for next step.\n")
 
-# ================================================================
-# 7. CONFUSION MATRICES
-# ================================================================
-if best == "A":
-    y_true = y_testA
-    pred_nb = resA["NB_predictions"]
-    pred_knn = resA["KNN_predictions"]
-else:
-    y_true = y_testB
-    pred_nb = resB["NB_predictions"]
-    pred_knn = resB["KNN_predictions"]
-
-cm_nb = confusion_matrix(y_true, pred_nb)
-cm_knn = confusion_matrix(y_true, pred_knn)
-
-print("Naive Bayes Confusion Matrix:\n", cm_nb)
-print("KNN Confusion Matrix:\n", cm_knn)
+print("Saved encoded datasets.\n")
 
 # ================================================================
 # 8. PLOTS
 # ================================================================
 os.makedirs("images", exist_ok=True)
 
+# Performance plot
 labels = ["NB (Ordinal)", "NB (One-Hot)", "KNN (Ordinal)", "KNN (One-Hot)"]
-scores = [resA["NB_accuracy"], resB["NB_accuracy"], resA["KNN_accuracy"], resB["KNN_accuracy"]]
+scores = [accA_nb, accB_nb, accA_knn, accB_knn]
 
 figure(figsize=(7,4))
 plot_bar_chart(labels, scores)
 for i, v in enumerate(scores):
     text(i, v + 0.01, f"{v:.3f}", ha='center')
-title("Model Accuracy per Algorithm and Encoding Approach")
+title("Model Accuracy by Encoding")
 savefig("images/encoding_performance.png")
 show()
 
-best_scores = [max(resA["NB_accuracy"], resA["KNN_accuracy"]),
-               max(resB["NB_accuracy"], resB["KNN_accuracy"])]
+# Best approach comparison
+best_scores = [
+    max(accA_nb, accA_knn),
+    max(accB_nb, accB_knn)
+]
+
 figure(figsize=(5,3))
 plot_bar_chart(["Ordinal", "One-Hot"], best_scores)
 for i, v in enumerate(best_scores):
     text(i, v + 0.01, f"{v:.3f}", ha='center')
-title("Best Approach by Maximum Accuracy")
+title("Best Encoding Approach")
 savefig("images/encoding_best_approach.png")
 show()
 
+# Confusion matrices
+cm_nb = confusion_matrix(y_true, pred_nb)
+cm_knn = confusion_matrix(y_true, pred_knn)
+
 figure()
-plot_confusion_matrix(cm_nb, ["0","1"])
-title(f"Naive Bayes Confusion Matrix — Best Approach ({best})")
+plot_confusion_matrix(cm_nb, ["0", "1"])
+title(f"NB Confusion Matrix — Best: {best}")
 savefig("images/encoding_cm_nb.png")
 show()
 
 figure()
 plot_confusion_matrix(cm_knn, ["0","1"])
-title(f"KNN Confusion Matrix — Best Approach ({best})")
+title(f"KNN Confusion Matrix — Best: {best}")
 savefig("images/encoding_cm_knn.png")
 show()
+
+print("=== ENCODING COMPLETE ===")

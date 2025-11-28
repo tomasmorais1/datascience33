@@ -6,7 +6,7 @@ import os
 # ================================================================
 # CONFIG
 # ================================================================
-DATA_PATH = "flights_reduced_25pct.csv"
+DATA_PATH = "flights_reduced_5pct.csv"
 OUTPUT_DIR = "prepared_data"
 TARGET = "Cancelled"
 TEST_SIZE = 0.3
