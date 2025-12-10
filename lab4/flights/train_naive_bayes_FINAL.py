@@ -1,11 +1,9 @@
 import os
 import pandas as pd
 from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix, ConfusionMatrixDisplay
 from matplotlib.pyplot import figure, savefig, close
-# Importamos matplotlib.pyplot como plt para o ajuste de layout
 import matplotlib.pyplot as plt
-# Assumo que 'dslabs_functions.py' e 'plot_bar_chart' estão disponíveis
 from dslabs_functions import plot_bar_chart
 
 # --- VARIÁVEIS A AJUSTAR ---
@@ -24,7 +22,7 @@ except FileNotFoundError:
     print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
     exit()
 
-# Separar X e y
+# Separar X e y (SEM Data Cleaning extra)
 if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
     print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
     exit()
@@ -36,7 +34,7 @@ tstY = tst_df[TARGET]
 
 labels = sorted(trnY.unique())
 
-# --- Hyperparameters study (Apenas GaussianNB para dados escalados) --- so pode ser gaussian pois os outros modelos so aceitam valores negativos
+# --- Hyperparameters study (Apenas GaussianNB) ---
 estimators = {
     "GaussianNB": GaussianNB(),
 }
@@ -53,7 +51,7 @@ for name, clf in estimators.items():
     clf.fit(trnX, trnY)
     y_pred = clf.predict(tstX)
 
-    # Cálculo das métricas de desempenho
+    # Cálculo das métricas
     acc = accuracy_score(tstY, y_pred)
     prec = precision_score(tstY, y_pred, average="weighted", zero_division=0)
     rec = recall_score(tstY, y_pred, average="weighted", zero_division=0)
@@ -70,30 +68,30 @@ for name, clf in estimators.items():
 
     print(f"{name} -> Accuracy: {acc:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}")
 
-# --- Plotagem dos Resultados (Gráficos sugeridos: Estudo de Hiperparâmetros) ---
+# --- Plotagem dos Resultados ---
 
 # Plot Accuracy
-figure(figsize=(8, 5)) # NOVO: Tamanho da figura
+figure(figsize=(8, 5))
 plot_bar_chart(xvalues, acc_values, title="Naive Bayes - Comparação de Accuracy", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
+plt.tight_layout()
 savefig("images/nb_accuracy.png")
 close()
 
 # Plot Precision
-figure(figsize=(8, 5)) # NOVO: Tamanho da figura
+figure(figsize=(8, 5))
 plot_bar_chart(xvalues, prec_values, title="Naive Bayes - Comparação de Precision", ylabel="Precision", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
+plt.tight_layout()
 savefig("images/nb_precision.png")
 close()
 
 # Plot Recall
-figure(figsize=(8, 5)) # NOVO: Tamanho da figura
+figure(figsize=(8, 5))
 plot_bar_chart(xvalues, rec_values, title="Naive Bayes - Comparação de Recall", ylabel="Recall", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
+plt.tight_layout()
 savefig("images/nb_recall.png")
 close()
 
-# --- Best model performance (Tabela sugerida: Desempenho do melhor modelo) ---
+# --- Best model performance ---
 print(f"\n--- Desempenho do Melhor Modelo: {best_name} ---")
 
 y_trn_pred = best_model.predict(trnX)
@@ -110,14 +108,12 @@ for metric, func in metrics.items():
         trn_val = func(trnY, y_trn_pred)
         tst_val = func(tstY, y_tst_pred)
     else:
-        # Para Precision e Recall em multi-classe/binário, usa-se 'weighted'
         trn_val = func(trnY, y_trn_pred, average="weighted", zero_division=0)
         tst_val = func(tstY, y_tst_pred, average="weighted", zero_division=0)
 
     print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
 
-# --- Overfitting Study (Gráfico sugerido: Estudo de Overfitting) ---
-# Usando Accuracy para o estudo de Overfitting
+# --- Overfitting Study ---
 data = {
     'Dataset': ['Train', 'Test'],
     'Accuracy': [
@@ -126,12 +122,28 @@ data = {
     ]
 }
 
-figure(figsize=(6, 4)) # NOVO: Tamanho da figura para o gráfico de Overfitting
+figure(figsize=(6, 4))
 plot_bar_chart(data['Dataset'], data['Accuracy'], title=f"Overfitting Study - {best_name}", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
+plt.tight_layout()
 savefig("images/nb_overfitting.png")
 close()
 
+# --- CONFUSION MATRIX (Adicionado) ---
+print(f"\n--- A gerar Matriz de Confusão ({best_name}) ---")
+
+# Gera a matriz
+cm = confusion_matrix(tstY, y_tst_pred, labels=best_model.classes_)
+
+# Prepara a visualização
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=best_model.classes_)
+
+# Desenha e guarda
+figure(figsize=(8, 8))
+disp.plot(cmap=plt.cm.Blues, ax=plt.gca())
+plt.title(f"Confusion Matrix - {best_name}")
+plt.tight_layout()
+savefig("images/nb_confusion_matrix.png")
+close()
+
 print(f"\nMelhor Modelo Naïve Bayes: {best_name}")
-print(f"Hiperparâmetros: {best_model.get_params()}")
-print("\nGráficos de 'nb_accuracy.png', 'nb_precision.png', 'nb_recall.png', e 'nb_overfitting.png' guardados na pasta 'images'.")
+print("\nGráficos (incluindo Confusion Matrix) guardados na pasta 'images'.")
