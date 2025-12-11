@@ -1,90 +1,121 @@
 #!/usr/bin/env python3
 """
 Lab 5 – Stationarity Exploration
-Traffic Accidents dataset
+NEW TrafficTwoMonth dataset
 """
 
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import adfuller
-from dslabs_functions import plot_line_chart, HEIGHT
+from dslabs_functions import plot_line_chart
 
-DATAFILE = "traffic_accidents.csv"
-TIMESTAMP = "crash_date"
+DATAFILE = "TrafficTwoMonth.csv"
+TARGET = "Total"
 
-OUTPUT_DIR = Path("images/stationarity")
+OUTPUT_DIR = Path("images/CORRECT")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# --------------------------------------------------------
-# Helper functions
-# --------------------------------------------------------
-def aggregate_ts(series, granularity: str, agg_func: str = "sum"):
-    """
-    Aggregate series by granularity: "W", "M", "Q", etc.
-    """
-    return series.resample(granularity).agg(agg_func)
 
+# --------------------------------------------------------
+# Build proper timestamp from 15-minute sequence
+# --------------------------------------------------------
+def build_timestamp(df):
+    """
+    Dataset has no real date, only day number + time.
+    We rebuild a continuous timestamp for the 5952 rows.
+    """
+    df = df.copy()
+    base = pd.date_range(
+        start="2023-12-06",
+        periods=len(df),
+        freq="15min"
+    )
+    df["timestamp"] = base
+    return df
+
+
+# --------------------------------------------------------
+# ADF test helper
+# --------------------------------------------------------
 def eval_adf(series):
-    """
-    Run Augmented Dickey-Fuller test and return result dict.
-    """
+    series = series.dropna()   # ADF cannot run with NaN
+
     result = adfuller(series, autolag='AIC')
+
     return {
         "ADF Statistic": result[0],
         "p-value": result[1],
-        "1%": result[4]['1%'],
-        "5%": result[4]['5%'],
-        "10%": result[4]['10%'],
-        "stationary": result[1] <= 0.05
+        "1%": result[4]["1%"],
+        "5%": result[4]["5%"],
+        "10%": result[4]["10%"],
+        "stationary": (result[1] <= 0.05)
     }
 
+
+# --------------------------------------------------------
+# Main
+# --------------------------------------------------------
 def main():
 
-    print("\n=== LAB 5 — STATIONARITY EXPLORATION ===\n")
+    print("\n=== LAB 5 — STATIONARITY (NEW DATASET) ===\n")
 
-    # 1) Load dataset
+    # Load + timestamp
     df = pd.read_csv(DATAFILE)
-    df[TIMESTAMP] = pd.to_datetime(df[TIMESTAMP], errors="coerce")
-    df = df.dropna(subset=[TIMESTAMP]).sort_values(TIMESTAMP)
+    df = build_timestamp(df).sort_values("timestamp")
 
-    # 2) Build base hourly crash count
-    ts_hourly = df.set_index(TIMESTAMP).resample("H").size()
-    ts_hourly.name = "crashes_per_hour"
+    # Base HOURLY series
+    ts_hourly = df.set_index("timestamp")[TARGET].resample("H").sum()
 
-    # 3) Compute granularities: weekly, monthly, trimestral
-    granularities = {"Weekly": "W", "Monthly": "M", "Trimestral": "Q"}
-    ts_gran = {name: aggregate_ts(ts_hourly, code, "sum") for name, code in granularities.items()}
+    # Additional granularities
+    ts_daily = ts_hourly.resample("D").sum()
+    ts_weekly = ts_hourly.resample("W").sum()
 
-    # 4) Plot series with mean line and run ADF test
-    for name, series in ts_gran.items():
-        print(f"\n--- {name} Series ---")
-        result = eval_adf(series)
-        print(f"ADF Statistic: {result['ADF Statistic']:.3f}")
-        print(f"p-value: {result['p-value']:.3f}")
-        print("Critical Values: 1%={1%}, 5%={5%}, 10%={10%}".format(**result))
-        print(f"Stationary: {result['stationary']}")
+    granularities = {
+        "Hourly": ts_hourly,
+        "Daily": ts_daily,
+        "Weekly": ts_weekly
+    }
 
-        # Plot series + mean
+    # Run ADF + Plot
+    for name, series in granularities.items():
+
+        print(f"\n--- {name} ---")
+        res = eval_adf(series)
+
+        print(f"ADF Statistic: {res['ADF Statistic']:.4f}")
+        print(f"p-value: {res['p-value']:.6f}")
+        print(f"Critical Values:")
+        print(f"   1%:  {res['1%']}")
+        print(f"   5%:  {res['5%']}")
+        print(f"   10%: {res['10%']}")
+        print(f"Stationary (p<=0.05)?  {res['stationary']}")
+
+        # Plot series + mean line
         fig = plt.figure(figsize=(12, 4))
         ax = fig.gca()
+
         plot_line_chart(
             series.index,
             series.values,
-            title=f"Traffic Accidents – {name} Crash Counts (Stationarity)",
-            xlabel="Time",
-            ylabel="Crashes",
+            title=f"{name} Series (Stationarity Check)",
+            xlabel="time",
+            ylabel=TARGET,
             ax=ax
         )
-        mean_series = [series.mean()] * len(series)
-        ax.plot(series.index, mean_series, "r--", label="Mean")
+
+        # Mean line
+        ax.axhline(series.mean(), color="red", linestyle="--", label="Mean")
         ax.legend()
+
         plt.tight_layout()
         plt.savefig(OUTPUT_DIR / f"stationarity_{name.lower()}.png")
         plt.close()
+
         print(f"Saved: stationarity_{name.lower()}.png")
 
     print("\n=== DONE ===\n")
+
 
 if __name__ == "__main__":
     main()
