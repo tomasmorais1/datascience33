@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """
 Lab 5 – Granularity Exploration
-Using dslabs_functions
-
-
-
-
--> ATENCAO, UMA DAS GRANURALIDADES JA TEM IMAGEM CRIADA NA DIMENSIONALITY
-
-
-
-
-
+NEW DATASET: TrafficTwoMonth.csv
+Two extra granularities: HOURLY and WEEKLY
 """
 
 from pathlib import Path
@@ -19,65 +10,87 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from dslabs_functions import plot_line_chart
 
-DATAFILE = "traffic_accidents.csv"
-TIMESTAMP = "crash_date"
-
-OUTPUT_DIR = Path("images")
+DATAFILE = "TrafficTwoMonth.csv"
+OUTPUT_DIR = Path("images/CORRECT")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-def aggregate_ts(series, granularity: str, agg_func: str = "sum"):
-    """
-    Aggregates a Pandas Series with a time index.
-    granularity: "W", "M", "Q", etc.
-    agg_func: "sum", "mean", etc.
-    """
-    return series.resample(granularity).agg(agg_func)
+TARGET = "Total"   # traffic count column
 
+
+# ---------------------------------------------------
+# Helper: unified timestamp builder
+# ---------------------------------------------------
+def build_timestamp(df):
+    """
+    Dataset has 5952 rows recorded every 15 minutes.
+    We reconstruct a continuous timestamp.
+    """
+    df = df.copy()
+    df["timestamp"] = pd.date_range(
+        start="2023-12-06",   # arbitrary but valid start date
+        periods=len(df),
+        freq="15min"
+    )
+    return df
+
+
+# ---------------------------------------------------
+# Main
+# ---------------------------------------------------
 def main():
-    print("\n=== LAB 5 — GRANULARITY (USING DSLABS FUNCTIONS) ===\n")
 
-    # Load dataset
+    print("\n=== LAB 5 — GRANULARITY (NEW DATASET) ===\n")
+
+    # Load and prepare data
     df = pd.read_csv(DATAFILE)
-    df[TIMESTAMP] = pd.to_datetime(df[TIMESTAMP], errors="coerce")
-    df = df.dropna(subset=[TIMESTAMP]).sort_values(TIMESTAMP)
+    df = build_timestamp(df)
+    df = df.sort_values("timestamp")
 
-    # Base hourly crash count
-    hourly_ts = df.set_index(TIMESTAMP).resample("H").size()
-    hourly_ts.name = "crashes_per_hour"
+    # Build base time series (15-minute data)
+    base_ts = df.set_index("timestamp")[TARGET]
 
     # Aggregations
-    weekly_ts = aggregate_ts(hourly_ts, "W", "sum")
-    monthly_ts = aggregate_ts(hourly_ts, "M", "sum")
-    quarterly_ts = aggregate_ts(hourly_ts, "Q", "sum")
+    hourly_ts = base_ts.resample("H").sum()
+    weekly_ts = base_ts.resample("W").sum()
 
+    print("Base points (15 min):", len(base_ts))
     print("Hourly points:", len(hourly_ts))
     print("Weekly points:", len(weekly_ts))
-    print("Monthly points:", len(monthly_ts))
-    print("Quarterly points:", len(quarterly_ts))
 
-    # Plotting
-    for ts_data, name, ylabel in [
-        (weekly_ts, "weekly", "crashes per week"),
-        (monthly_ts, "monthly", "crashes per month"),
-        (quarterly_ts, "quarterly", "crashes per quarter")
-    ]:
-        fig = plt.figure(figsize=(12, 4))
-        ax = fig.gca()
-        plot_line_chart(
-            ts_data.index,
-            ts_data.values,
-            title=f"Traffic Accidents – {name.capitalize()} Crash Counts",
-            xlabel="time",
-            ylabel=ylabel,
-            ax=ax
-        )
-        plt.tight_layout()
-        plt.savefig(OUTPUT_DIR / f"granularity_{name}.png")
-        plt.close()
-        print(f"Saved: images/granularity_{name}.png")
+    # Plot: HOURLY
+    fig = plt.figure(figsize=(12, 4))
+    ax = fig.gca()
+    plot_line_chart(
+        hourly_ts.index,
+        hourly_ts.values,
+        title="Traffic – Hourly Total Counts",
+        xlabel="time",
+        ylabel="traffic per hour",
+        ax=ax
+    )
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "granularity_hourly.png")
+    plt.close()
+    print("Saved: images/CORRECT/granularity_hourly.png")
+
+    # Plot: WEEKLY
+    fig = plt.figure(figsize=(12, 4))
+    ax = fig.gca()
+    plot_line_chart(
+        weekly_ts.index,
+        weekly_ts.values,
+        title="Traffic – Weekly Total Counts",
+        xlabel="time",
+        ylabel="traffic per week",
+        ax=ax
+    )
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "granularity_weekly.png")
+    plt.close()
+    print("Saved: images/CORRECT/granularity_weekly.png")
 
     print("\n=== DONE ===\n")
 
+
 if __name__ == "__main__":
     main()
-
