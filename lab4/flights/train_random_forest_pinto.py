@@ -38,8 +38,10 @@ cols_to_drop = [
     'ArrDelay', 'DepDelay', 'ActualElapsedTime', 
     'AirTime', 'ArrTime', 'DepTime', 
     'WheelsOff', 'WheelsOn', 'TaxiIn', 'TaxiOut',
-    # Adiciona 'Diverted' também, pois é um resultado final
-    'Diverted' 
+    'Diverted', 
+    'ArrivalDelayGroups', 'DepDelayGroups',
+    'ArrDel15', 'DepDel15',
+    'ArrDelayMinutes', 'DepDelayMinutes'
 ]
 
 # Verifica quais destas colunas existem realmente no dataset e apaga
