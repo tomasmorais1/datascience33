@@ -6,15 +6,16 @@ import pandas as pd
 from numpy import array, argsort
 import matplotlib.pyplot as plt
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from dslabs_functions import plot_multiline_chart, plot_horizontal_bar_chart
+# Importar F1-Score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from dslabs_functions import plot_multiline_chart, plot_horizontal_bar_chart, plot_evaluation_results
 
 # ----------------------------- Config -----------------------------
 TARGET = "Cancelled"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
 FILE_TAG = "flights"
-EVAL_METRIC = "accuracy"
+EVAL_METRIC = "f1" # Dataset 2 -> F1 Score
 DELTA_IMPROVE = 0.0005
 
 # Uniformizado com os outros (20k é um bom compromisso para GB)
@@ -30,7 +31,6 @@ except FileNotFoundError:
     exit()
 
 # --- BLOCO CRÍTICO: REMOVER DATA LEAKAGE ---
-# Removemos variáveis que contêm a resposta (ex: Atrasos, Tempos de voo reais)
 cols_to_drop = [
     'ArrDelay', 'DepDelay', 'ActualElapsedTime', 
     'AirTime', 'ArrTime', 'DepTime', 
@@ -63,44 +63,49 @@ tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
 
 VARS = trnX.columns.tolist()
+labels = sorted(trnY.unique())
 os.makedirs("images", exist_ok=True)
 print(f"Dados prontos: Train (Sample)={len(trnX)}, Test={len(tstX)}")
 
-# ----------------- Hyperparameter Study -----------------
+# ----------------- Hyperparameter Study (Best Model Search) -----------------
 def gradient_boosting_study(trnX, trnY, tstX, tstY,
                             nr_max_trees=200, lag=50, metric=EVAL_METRIC):
-    # Ajustei o lag para 50 para ter mais pontos no gráfico
+    
     n_estimators = [10] + [i for i in range(50, nr_max_trees + 1, lag)]
-    max_depths = [3, 5]        
-    learning_rates = [0.1, 0.05]
+    # As profundidades pedidas:
+    max_depths = [2, 5, 7]        
+    learning_rates = [0.1, 0.3, 0.5] # Adicionei mais opções para o gráfico ficar mais rico
 
     best_model = None
-    best_params = {"params": ()}
+    best_params = {"name": "GB", "metric": metric, "params": ()}
     best_perf = 0.0
 
+    # Layout para os gráficos de comparação
     cols = len(max_depths)
-    _, axs = plt.subplots(1, cols, figsize=(cols * 5, 5), squeeze=False)
+    _, axs = plt.subplots(1, cols, figsize=(cols * 6, 5), squeeze=False)
 
     print("\n--- Hyperparameter Study: Gradient Boosting ---")
     
     for i, d in enumerate(max_depths):
         values = {}
+        print(f"   > Testing Depth={d}...")
         for lr in learning_rates:
             y_test_vals = []
-            print(f"   > A testar: Depth={d}, LR={lr}...")
             
             for n in n_estimators:
-                # GradientBoosting é sequencial (sem n_jobs=-1)
                 clf = GradientBoostingClassifier(n_estimators=n, max_depth=d, learning_rate=lr, random_state=42)
                 clf.fit(trnX, trnY)
                 
                 y_pred = clf.predict(tstX)
-                score = accuracy_score(tstY, y_pred)
+                
+                # Métrica de avaliação (F1)
+                score = f1_score(tstY, y_pred, average="weighted", zero_division=0)
                 y_test_vals.append(score)
 
                 if score - best_perf > DELTA_IMPROVE:
                     best_perf = score
                     best_params["params"] = (d, lr, n)
+                    best_params["f1"] = score
                     best_model = clf
             
             values[f'LR={lr}'] = y_test_vals
@@ -109,85 +114,94 @@ def gradient_boosting_study(trnX, trnY, tstX, tstY,
             n_estimators,
             values,
             ax=axs[0, i],
-            title=f"GB Accuracy vs Trees (Depth={d})",
-            xlabel="Número de Árvores",
-            ylabel="Accuracy",
+            title=f"GB F1-Score (Depth={d})",
+            xlabel="Nr Estimators",
+            ylabel="F1-Score",
             percentage=True
         )
         axs[0, i].legend(title="Learning Rate", fontsize=8)
 
     plt.tight_layout()
+    # Este é o gráfico "Gradient boosting different parameterisations comparison"
     plt.savefig(f"images/{FILE_TAG}_gb_{EVAL_METRIC}_study.png")
     plt.close()
 
-    print(f"Melhor GB encontrado: Depth={best_params['params'][0]}, LR={best_params['params'][1]}, Estimators={best_params['params'][2]}")
+    print(f"Melhor GB encontrado: Depth={best_params['params'][0]}, LR={best_params['params'][1]}, Estimators={best_params['params'][2]} (F1={best_perf:.4f})")
     return best_model, best_params
 
 # Executar estudo
 best_model, params = gradient_boosting_study(trnX, trnY, tstX, tstY, nr_max_trees=200, lag=50)
 
-# ----------------- Performance Metrics -----------------
-# Recalcular previsões finais
+
+# ----------------- Best Model Results (Confusion Matrix) -----------------
+print("\n--- Gerando Matrizes de Confusão (Best Model) ---")
 prd_trn = best_model.predict(trnX)
 prd_tst = best_model.predict(tstX)
 
-metrics = {
-    "Accuracy": accuracy_score,
-    "Precision": lambda t, p: precision_score(t, p, average="weighted", zero_division=0),
-    "Recall": lambda t, p: recall_score(t, p, average="weighted", zero_division=0)
-}
+plt.figure(figsize=(12, 8))
+plot_evaluation_results(params, trnY, prd_trn, tstY, prd_tst, labels)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_gb_best_model_eval.png")
+plt.close()
+print("Gráfico 'gb_best_model_eval.png' guardado.")
 
-print("\n--- Best Model Performance ---")
-print(f"Hiperparâmetros: Depth={params['params'][0]}, LR={params['params'][1]}, Estimators={params['params'][2]}")
-for metric, func in metrics.items():
-    print(f"{metric} - Train: {func(trnY, prd_trn):.4f}, Test: {func(tstY, prd_tst):.4f}")
 
 # ----------------- Overfitting Study -----------------
 d_max, lr_best = params['params'][0], params['params'][1]
-# Reduzi o range do overfitting para ser mais rápido
-nr_test_estimators = [10, 50, 100, 150, 200]
+nr_test_estimators = [10, 50, 100, 150, 200, 250, 300] # Range para o gráfico
 
 y_trn_vals, y_tst_vals = [], []
-print("\n--- A gerar gráfico de Overfitting... ---")
+print("\n--- Gerando Gráfico de Overfitting... ---")
 
 for n in nr_test_estimators:
     clf = GradientBoostingClassifier(n_estimators=n, max_depth=d_max, learning_rate=lr_best, random_state=42)
     clf.fit(trnX, trnY)
-    y_trn_vals.append(accuracy_score(trnY, clf.predict(trnX)))
-    y_tst_vals.append(accuracy_score(tstY, clf.predict(tstX)))
+    
+    # Avaliar com F1-Score
+    y_trn_vals.append(f1_score(trnY, clf.predict(trnX), average="weighted", zero_division=0))
+    y_tst_vals.append(f1_score(tstY, clf.predict(tstX), average="weighted", zero_division=0))
 
 plt.figure(figsize=(10, 6))
 plot_multiline_chart(
     nr_test_estimators,
     {"Train": y_trn_vals, "Test": y_tst_vals},
-    title=f"GB Overfitting Study (Depth={d_max}, LR={lr_best})",
-    xlabel="Número de Árvores",
-    ylabel="Accuracy",
+    title=f"GB Overfitting (Depth={d_max}, LR={lr_best})",
+    xlabel="Nr Estimators",
+    ylabel="F1-Score",
     percentage=True
 )
 plt.tight_layout()
-plt.savefig(f"images/{FILE_TAG}_gb_{EVAL_METRIC}_overfitting.png")
+plt.savefig(f"images/{FILE_TAG}_gb_overfitting.png")
 plt.close()
+print("Gráfico 'gb_overfitting.png' guardado.")
+
 
 # ----------------- Feature Importance -----------------
 if hasattr(best_model, 'feature_importances_'):
     importances = best_model.feature_importances_
     indices = argsort(importances)[::-1]
-    elems = [VARS[i] for i in indices[:10]]
-    imp_values = [importances[i] for i in indices[:10]]
+    
+    # Top 10
+    elems = []
+    imp_values = []
+    for i in range(10):
+        idx = indices[i]
+        elems.append(VARS[idx])
+        imp_values.append(importances[idx])
 
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(10, 8))
+    # Horizontal Bar Chart
+    plt.barh(elems[::-1], imp_values[::-1], color='skyblue')
+    plt.xlabel("Importance")
+    plt.title("GB Variable Importance")
+    
+    # Labels
     ax = plt.gca()
-    plot_horizontal_bar_chart(
-        elems,
-        imp_values,
-        title=f"Top 10 Variáveis (Gradient Boosting)",
-        xlabel="Importância",
-        ylabel="Variáveis",
-        percentage=False
-    )
+    ax.bar_label(ax.containers[0], fmt='%.4f', padding=3)
+    
     plt.tight_layout()
-    plt.savefig(f"images/{FILE_TAG}_gb_{EVAL_METRIC}_vars_ranking.png")
+    plt.savefig(f"images/{FILE_TAG}_gb_vars_ranking.png")
     plt.close()
+    print("Gráfico 'gb_vars_ranking.png' guardado.")
 
-print("\nGráficos do Gradient Boosting concluídos e guardados na pasta 'images'.")
+print("\nProcesso concluído.")

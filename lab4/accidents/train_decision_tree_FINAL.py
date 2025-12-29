@@ -1,36 +1,39 @@
 import os
 import pandas as pd
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from matplotlib.pyplot import figure, savefig, close
+import numpy as np
 import matplotlib.pyplot as plt
-from dslabs_functions import plot_multiline_chart, plot_bar_chart
-# Necessário para a visualização da árvore
-from sklearn.tree import plot_tree
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+# Importar roc_auc_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from matplotlib.pyplot import figure, savefig, close
+from dslabs_functions import plot_multiline_chart, plot_bar_chart, plot_evaluation_results, plot_horizontal_bar_chart
 
-# --- VARIÁVEIS DE DADOS PREPARADOS ---
+# --- CONFIGURAÇÃO GLOBAL ---
+plt.rcParams.update({'font.size': 12})
+# ---------------------------
+
+# --- VARIÁVEIS ---
 TARGET = "crash_type"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
-# ------------------------------------
+FILE_TAG = "accidents"
 
-# Hiperparâmetros para estudo
+# Hiperparâmetros
 MAX_DEPTH = 25
 CRITERIA = ["gini", "entropy"]
 
 os.makedirs("images", exist_ok=True)
 
-# Load data (Dados já separados e escalados)
+# --- 1. CARREGAR DADOS ---
 try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: Ficheiros csv não encontrados.")
     exit()
 
-# Separar X e y
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
 trnX = trn_df.drop(columns=[TARGET])
@@ -39,161 +42,174 @@ tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
 
 labels = sorted(trnY.unique())
+print(f"Dados prontos para DT (Accidents): Train={len(trnX)}, Test={len(tstX)}")
 
-# --- Hyperparameters study (Tuning de Max Depth e Criterion) ---
-values_accuracy = {}
-values_precision = {}
-values_recall = {}
+# --- 2. ESTUDO DE HIPERPARÂMETROS (Focando no AUC) ---
+values_auc = {}  # Métrica principal para Dataset 1
+depths = list(range(2, MAX_DEPTH + 1))
 
 best_model = None
 best_score = 0
-best_params = None
+best_params = {'name': 'DT', 'metric': 'auc', 'params': ()}
 
-depths = list(range(2, MAX_DEPTH + 1))
-
-print("--- Estudo de Hiperparâmetros (Árvores de Decisão) ---")
+print("\n--- Estudo de Hiperparâmetros (DT - AUC) ---")
 
 for crit in CRITERIA:
-    acc_list = []
-    prec_list = []
-    rec_list = []
+    auc_list = []
+    print(f"Testing criterion: {crit}...")
 
     for d in depths:
-        # Nota: random_state=42 garante resultados reproduzíveis
         clf = DecisionTreeClassifier(max_depth=d, criterion=crit, random_state=42)
         clf.fit(trnX, trnY)
         
-        # Previsão no Teste
-        y_pred = clf.predict(tstX)
+        # Calcular AUC (Multiclasse OVR)
+        try:
+            y_probs = clf.predict_proba(tstX)
+            # Para multiclasse ou binário, o roc_auc_score adapta-se se configurado
+            if len(labels) > 2:
+                auc = roc_auc_score(tstY, y_probs, multi_class='ovr', average='weighted')
+            else:
+                auc = roc_auc_score(tstY, y_probs[:, 1])
+        except Exception as e:
+            print(f"Erro no AUC: {e}")
+            auc = 0.5
 
-        acc = accuracy_score(tstY, y_pred)
-        # Atenção: Usamos average="weighted" como nos scripts anteriores para maior consistência
-        prec = precision_score(tstY, y_pred, average="weighted", zero_division=0)
-        rec = recall_score(tstY, y_pred, average="weighted", zero_division=0)
+        auc_list.append(auc)
 
-        acc_list.append(acc)
-        prec_list.append(prec)
-        rec_list.append(rec)
-
-        if acc > best_score:
+        # Escolher melhor modelo (Maximizar AUC)
+        if auc > best_score:
             best_model = clf
-            best_score = acc
-            best_params = (crit, d)
+            best_score = auc
+            best_params['params'] = (crit, d)
+            best_params['auc'] = auc
 
-        print(f"max_depth={d}, criterion={crit} -> "
-              f"Accuracy: {acc:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}")
+    values_auc[crit] = auc_list
 
-    values_accuracy[crit] = acc_list
-    values_precision[crit] = prec_list
-    values_recall[crit] = rec_list
+print(f"Melhor Modelo DT: {best_params['params'][0]} com depth={best_params['params'][1]} (AUC={best_score:.4f})")
 
-# --- Plotagem dos Resultados (Gráfico sugerido: Estudo de Hiperparâmetros) ---
-
-# Plot Accuracy
-figure(figsize=(10, 6)) # Aumenta o tamanho da figura
-plot_multiline_chart(depths, values_accuracy,
-    title="Decision Tree Hyperparameters - Accuracy",
-    xlabel="Profundidade Máxima (max_depth)", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # Ajusta o layout
-savefig("images/dt_hyperparameters_accuracy.png")
+# --- 3. PLOT 1: Comparação de Modelos (AUC) ---
+figure(figsize=(10, 6))
+plot_multiline_chart(depths, values_auc,
+    title="DT Models (AUC)",
+    xlabel="max_depth", ylabel="AUC", percentage=True)
+plt.tight_layout()
+savefig(f"images/{FILE_TAG}_dt_auc_study.png")
 close()
+print("Gráfico 'dt_auc_study.png' guardado.")
 
-# Plot Precision
-figure(figsize=(10, 6)) # Aumenta o tamanho da figura
-plot_multiline_chart(depths, values_precision,
-    title="Decision Tree Hyperparameters - Precision",
-    xlabel="Profundidade Máxima (max_depth)", ylabel="Precision", percentage=True)
-plt.tight_layout() # Ajusta o layout
-savefig("images/dt_hyperparameters_precision.png")
-close()
-
-# Plot Recall
-figure(figsize=(10, 6)) # Aumenta o tamanho da figura
-plot_multiline_chart(depths, values_recall,
-    title="Decision Tree Hyperparameters - Recall",
-    xlabel="Profundidade Máxima (max_depth)", ylabel="Recall", percentage=True)
-plt.tight_layout() # Ajusta o layout
-savefig("images/dt_hyperparameters_recall.png")
-close()
-
-# --- Best model performance e Overfitting Study ---
+# --- 4. PLOT 2: Best Model Results (Evaluation Matrix) ---
 y_trn_pred = best_model.predict(trnX)
 y_tst_pred = best_model.predict(tstX)
 
-metrics = {
-    "Accuracy": accuracy_score,
-    "Precision": lambda t, p: precision_score(t, p, average="weighted", zero_division=0),
-    "Recall": lambda t, p: recall_score(t, p, average="weighted", zero_division=0),
-}
-
-print(f"\n--- Descrição do Melhor Modelo DT ---")
-print(f"Hiperparâmetros encontrados: Max_Depth={best_params[1]}, Criterion={best_params[0]}")
-
-print("\n--- Performance do Melhor Modelo ---")
-for metric, func in metrics.items():
-    trn_val = func(trnY, y_trn_pred)
-    tst_val = func(tstY, y_tst_pred)
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
-
-# Overfitting Study
-data_overfit = {
-    'Dataset': ['Train', 'Test'],
-    'Accuracy': [
-        accuracy_score(trnY, y_trn_pred),
-        accuracy_score(tstY, y_tst_pred)
-    ]
-}
-
-figure(figsize=(6, 4)) # Tamanho razoável para o Overfitting
-# Guardamos a referência do Axes (ax) para usar plt.bar_label
-ax = plt.gca()
-plot_bar_chart(data_overfit['Dataset'], data_overfit['Accuracy'],
-               title=f"Overfitting Study - DT (Max Depth={best_params[1]})", ylabel="Accuracy", percentage=True)
-plt.bar_label(ax.containers[0], fmt='%.4f', fontsize=8) # NOVO: Adiciona rótulos no topo das barras
-plt.tight_layout() # Ajusta o layout
-savefig("images/dt_overfitting.png")
+figure(figsize=(12, 8))
+# Nota: A matriz de confusão não depende do AUC, mostra os acertos brutos
+plot_evaluation_results(best_params, trnY, y_trn_pred, tstY, y_tst_pred, labels)
+plt.tight_layout()
+savefig(f"images/{FILE_TAG}_dt_best_model_eval.png")
 close()
+print("Gráfico 'dt_best_model_eval.png' guardado.")
 
-# --- Variáveis' Importance ---
+# --- 5. PLOT 3: Overfitting Study (Curva Train vs Test - AUC) ---
+# Aqui usamos AUC também para ser consistente com a métrica de escolha
+best_crit = best_params['params'][0]
+print(f"\n--- Estudo de Overfitting para {best_crit} (Metric: AUC) ---")
+
+y_tst_values = []
+y_trn_values = []
+
+for d in depths:
+    clf = DecisionTreeClassifier(max_depth=d, criterion=best_crit, random_state=42)
+    clf.fit(trnX, trnY)
+    
+    # Probabilidades para AUC
+    try:
+        y_probs_trn = clf.predict_proba(trnX)
+        y_probs_tst = clf.predict_proba(tstX)
+        
+        if len(labels) > 2:
+            auc_trn = roc_auc_score(trnY, y_probs_trn, multi_class='ovr', average='weighted')
+            auc_tst = roc_auc_score(tstY, y_probs_tst, multi_class='ovr', average='weighted')
+        else:
+            auc_trn = roc_auc_score(trnY, y_probs_trn[:, 1])
+            auc_tst = roc_auc_score(tstY, y_probs_tst[:, 1])
+    except:
+        auc_trn = 0.5
+        auc_tst = 0.5
+
+    y_trn_values.append(auc_trn)
+    y_tst_values.append(auc_tst)
+
+figure(figsize=(10, 6))
+plot_multiline_chart(
+    depths,
+    {"Train": y_trn_values, "Test": y_tst_values},
+    title=f"DT Overfitting Study ({best_crit}) - AUC",
+    xlabel="max_depth",
+    ylabel="AUC",
+    percentage=True
+)
+plt.tight_layout()
+savefig(f"images/{FILE_TAG}_dt_overfitting_curve.png")
+close()
+print("Gráfico 'dt_overfitting_curve.png' guardado.")
+
+
+# --- 6. PLOT 4: Feature Importance (Horizontal) ---
 if hasattr(best_model, 'feature_importances_'):
-    print("\n--- Variáveis Mais Importantes ---")
-
-    importance = pd.Series(best_model.feature_importances_, index=trnX.columns)
+    importances = best_model.feature_importances_
+    indices = np.argsort(importances)[::-1]
     
     top_n = 10
-    top_importance = importance.sort_values(ascending=False).head(top_n)
-
-    figure(figsize=(12, 6)) # Tamanho grande para acomodar labels longas
-    # Guardamos a referência do Axes (ax) para usar plt.bar_label
-    ax = plt.gca()
-    plot_bar_chart(top_importance.index.to_list(), top_importance.values.tolist(),
-                   title=f"Importância das {top_n} Melhores Variáveis (DT)",
-                   ylabel="Importância", percentage=False)
+    top_indices = indices[:top_n]
     
-    # Rotação e redução de fonte para labels do eixo X
-    plt.xticks(rotation=45, ha='right', fontsize=9)
-    plt.bar_label(ax.containers[0], fmt='%.4f', fontsize=8) # NOVO: Adiciona rótulos no topo das barras
+    elems = []
+    imp_values = []
+    
+    print("\n--- Variáveis Mais Importantes ---")
+    for f in range(top_n):
+        idx = top_indices[f]
+        name = trnX.columns[idx]
+        val = importances[idx]
+        elems.append(name)
+        imp_values.append(val)
+        print(f"{f+1}. {name} ({val:.4f})")
+    
+    figure(figsize=(10, 8))
+    try:
+        plot_horizontal_bar_chart(
+            elems[::-1],
+            imp_values[::-1],
+            title="Decision Tree Variables Importance",
+            xlabel="Importance",
+            ylabel="Variables",
+            percentage=True
+        )
+    except:
+        plt.barh(elems[::-1], imp_values[::-1], color='skyblue')
+        plt.xlabel("Importance")
+        plt.title("Decision Tree Variables Importance")
+        ax = plt.gca()
+        ax.bar_label(ax.containers[0], fmt='%.4f', padding=3)
+
     plt.tight_layout()
-    savefig("images/dt_feature_importance.png")
+    savefig(f"images/{FILE_TAG}_dt_vars_ranking.png")
     close()
-    
-    print(top_importance)
-    print(f"\nGráfico 'dt_feature_importance.png' (Importância) guardado na pasta 'images'.")
+    print("Gráfico 'dt_vars_ranking.png' guardado.")
 
-# --- Model Learnt (Visualização da Árvore) ---
-# [cite_start]A visualização de árvores é a sugestão "Model learnt, when possible" [cite: 27]
-# Limite a profundidade para que o gráfico seja legível.
-viz_depth = 3
-figure(figsize=(20, 10))
-# Obter os nomes das classes como strings para visualização
-class_names_str = [str(c) for c in labels]
-plot_tree(best_model, feature_names=trnX.columns.tolist(), class_names=class_names_str,
-          max_depth=viz_depth, filled=True, rounded=True, fontsize=8)
-plt.title(f"Visualização da Decision Tree (Depth {viz_depth}) - Max Depth Real: {best_params[1]}")
+# --- 7. PLOT 5: Árvore Visual ---
+figure(figsize=(14, 6))
+plot_tree(
+    best_model,
+    max_depth=3,
+    feature_names=trnX.columns.tolist(),
+    class_names=[str(c) for c in labels],
+    filled=True,
+    rounded=True,
+    fontsize=10
+)
 plt.tight_layout()
-savefig("images/dt_model_learnt.png")
+savefig(f"images/{FILE_TAG}_dt_tree_viz.png")
 close()
-print(f"\nGráfico 'dt_model_learnt.png' (visualização da árvore) guardado na pasta 'images'.")
+print("Gráfico 'dt_tree_viz.png' guardado.")
 
-
-print("\nGráficos da Árvore de Decisão concluídos e guardados na pasta 'images'.")
+print("\nProcesso concluído (Accidents).")

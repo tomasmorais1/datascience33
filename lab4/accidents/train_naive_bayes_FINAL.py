@@ -1,18 +1,22 @@
 import os
 import pandas as pd
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from matplotlib.pyplot import figure, savefig, close
-# Importamos matplotlib.pyplot como plt para o ajuste de layout
 import matplotlib.pyplot as plt
-# Assumo que 'dslabs_functions.py' e 'plot_bar_chart' estão disponíveis
-from dslabs_functions import plot_bar_chart
+from sklearn.naive_bayes import GaussianNB, BernoulliNB
+# ADICIONEI precision_score e roc_auc_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from matplotlib.pyplot import figure, savefig, close
+from dslabs_functions import plot_bar_chart, plot_evaluation_results
+
+# --- CONFIGURAÇÃO DE FONTE GLOBAL ---
+plt.rcParams.update({'font.size': 12})
+# ------------------------------------
 
 # --- VARIÁVEIS A AJUSTAR ---
 TARGET = "crash_type"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
-# ----------------------------
+# Mudei a tag para identificar que é o dataset accidents
+FILE_TAG = "accidents_nb" 
 
 os.makedirs("images", exist_ok=True)
 
@@ -21,12 +25,11 @@ try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: Ficheiros não encontrados.")
     exit()
 
-# Separar X e y
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
 trnX = trn_df.drop(columns=[TARGET])
@@ -36,88 +39,103 @@ tstY = tst_df[TARGET]
 
 labels = sorted(trnY.unique())
 
-# --- Hyperparameters study (Apenas GaussianNB para dados escalados) --- so pode ser gaussian pois os outros modelos so aceitam valores negativos
+# --- Hyperparameters study ---
 estimators = {
     "GaussianNB": GaussianNB(),
+    "BernoulliNB": BernoulliNB()
 }
 
 xvalues = []
 acc_values = []
-prec_values = []
+prec_values = [] # Precision
 rec_values = []
+f1_values = []   # F1
+auc_values = []  # AUC
 
-best_model, best_score, best_name = None, 0, ""
+best_model = None
+best_score = 0
+best_name = ""
+# Por defeito guardamos F1 no best_params, mas podes mudar
+best_params = {"name": "", "metric": "f1", "params": ()}
 
-print("--- Estudo de Hiperparâmetros (Naïve Bayes) ---")
+print("--- Estudo de Hiperparâmetros (Naïve Bayes - Todas as Métricas) ---")
+
 for name, clf in estimators.items():
     clf.fit(trnX, trnY)
     y_pred = clf.predict(tstX)
 
-    # Cálculo das métricas de desempenho
+    # 1. Cálculo das Métricas Padrão
     acc = accuracy_score(tstY, y_pred)
     prec = precision_score(tstY, y_pred, average="weighted", zero_division=0)
     rec = recall_score(tstY, y_pred, average="weighted", zero_division=0)
+    f1 = f1_score(tstY, y_pred, average="weighted", zero_division=0)
+    
+    # 2. Cálculo do AUC (Requer probabilidades e tratamento multiclasse)
+    try:
+        y_probs = clf.predict_proba(tstX)
+        # Se for binário (2 classes) vs Multiclasse
+        if len(labels) > 2:
+            auc = roc_auc_score(tstY, y_probs, multi_class='ovr', average='weighted')
+        else:
+            auc = roc_auc_score(tstY, y_probs[:, 1])
+    except Exception as e:
+        print(f"Aviso: Não foi possível calcular AUC para {name}. Erro: {e}")
+        auc = 0.0
 
+    # Guardar valores
     xvalues.append(name)
     acc_values.append(acc)
     prec_values.append(prec)
     rec_values.append(rec)
+    f1_values.append(f1)
+    auc_values.append(auc)
 
-    if acc > best_score:
+    # Lógica de seleção do melhor modelo (Aqui mantive F1, mas podes mudar a métrica de decisão)
+    # Se quiseres escolher pelo AUC, muda para: if auc > best_score:
+    if f1 > best_score: 
         best_model = clf
-        best_score = acc
+        best_score = f1
         best_name = name
+        best_params["name"] = name
+        best_params["metric"] = f1
 
-    print(f"{name} -> Accuracy: {acc:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}")
+    print(f"{name} -> Acc:{acc:.3f}, Prec:{prec:.3f}, Rec:{rec:.3f}, F1:{f1:.3f}, AUC:{auc:.3f}")
 
-# --- Plotagem dos Resultados (Gráficos sugeridos: Estudo de Hiperparâmetros) ---
+# --- Plotagem dos Resultados (TODAS AS OPÇÕES) ---
 
-# Plot Accuracy
-figure(figsize=(8, 5)) # NOVO: Tamanho da figura
-plot_bar_chart(xvalues, acc_values, title="Naive Bayes - Comparação de Accuracy", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/nb_accuracy.png")
-close()
+def plot_nb_metric(metric_name, values):
+    figure(figsize=(8, 6))
+    ax = plt.gca()
+    plot_bar_chart(xvalues, values, title=f"Naive Bayes - {metric_name}", ylabel=metric_name, percentage=True)
+    
+    for text in ax.texts:
+        text.set_fontsize(12)
+        
+    plt.tight_layout()
+    savefig(f"images/{FILE_TAG}_nb_{metric_name.lower()}.png")
+    close()
 
-# Plot Precision
-figure(figsize=(8, 5)) # NOVO: Tamanho da figura
-plot_bar_chart(xvalues, prec_values, title="Naive Bayes - Comparação de Precision", ylabel="Precision", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/nb_precision.png")
-close()
+# Gerar TODOS os gráficos
+plot_nb_metric("Accuracy", acc_values)
+plot_nb_metric("Precision", prec_values)
+plot_nb_metric("Recall", rec_values)
+plot_nb_metric("F1-Score", f1_values)
+plot_nb_metric("AUC", auc_values)
 
-# Plot Recall
-figure(figsize=(8, 5)) # NOVO: Tamanho da figura
-plot_bar_chart(xvalues, rec_values, title="Naive Bayes - Comparação de Recall", ylabel="Recall", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/nb_recall.png")
-close()
 
-# --- Best model performance (Tabela sugerida: Desempenho do melhor modelo) ---
-print(f"\n--- Desempenho do Melhor Modelo: {best_name} ---")
+# --- Best Model Results ---
+print(f"\n--- Desempenho do Melhor Modelo ({best_name}) ---")
 
 y_trn_pred = best_model.predict(trnX)
 y_tst_pred = best_model.predict(tstX)
 
-metrics = {
-    "Accuracy": accuracy_score,
-    "Precision": precision_score,
-    "Recall": recall_score
-}
+figure(figsize=(12, 8))
+plot_evaluation_results(best_params, trnY, y_trn_pred, tstY, y_tst_pred, labels)
+plt.tight_layout()
+savefig(f"images/{FILE_TAG}_nb_best_model_eval.png")
+close()
 
-for metric, func in metrics.items():
-    if metric == "Accuracy":
-        trn_val = func(trnY, y_trn_pred)
-        tst_val = func(tstY, y_tst_pred)
-    else:
-        # Para Precision e Recall em multi-classe/binário, usa-se 'weighted'
-        trn_val = func(trnY, y_trn_pred, average="weighted", zero_division=0)
-        tst_val = func(tstY, y_tst_pred, average="weighted", zero_division=0)
-
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
-
-# --- Overfitting Study (Gráfico sugerido: Estudo de Overfitting) ---
-# Usando Accuracy para o estudo de Overfitting
+# --- Overfitting Study (Accuracy) ---
 data = {
     'Dataset': ['Train', 'Test'],
     'Accuracy': [
@@ -126,12 +144,21 @@ data = {
     ]
 }
 
-figure(figsize=(6, 4)) # NOVO: Tamanho da figura para o gráfico de Overfitting
+figure(figsize=(6, 5))
+ax = plt.gca()
 plot_bar_chart(data['Dataset'], data['Accuracy'], title=f"Overfitting Study - {best_name}", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/nb_overfitting.png")
+
+for text in ax.texts:
+    text.set_fontsize(12)
+
+plt.tight_layout()
+savefig(f"images/{FILE_TAG}_nb_overfitting.png")
 close()
 
 print(f"\nMelhor Modelo Naïve Bayes: {best_name}")
-print(f"Hiperparâmetros: {best_model.get_params()}")
-print("\nGráficos de 'nb_accuracy.png', 'nb_precision.png', 'nb_recall.png', e 'nb_overfitting.png' guardados na pasta 'images'.")
+print("\nGráficos gerados na pasta 'images':")
+print(f"- {FILE_TAG}_nb_accuracy.png")
+print(f"- {FILE_TAG}_nb_precision.png")
+print(f"- {FILE_TAG}_nb_recall.png")
+print(f"- {FILE_TAG}_nb_f1-score.png")
+print(f"- {FILE_TAG}_nb_auc.png")
