@@ -1,35 +1,34 @@
+import matplotlib
+matplotlib.use("Agg") # Previne erros de GUI
+
 import os
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from matplotlib.pyplot import figure, savefig, close
-# Importamos matplotlib.pyplot como plt para o ajuste de layout e ticks
+import numpy as np
 import matplotlib.pyplot as plt
-# Assumo que 'dslabs_functions.py', 'plot_multiline_chart' e 'plot_bar_chart' estão disponíveis
-from dslabs_functions import plot_multiline_chart, plot_bar_chart
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from dslabs_functions import plot_multiline_chart, plot_bar_chart, plot_horizontal_bar_chart, plot_evaluation_results
 
-# --- VARIÁVEIS A AJUSTAR ---
+# --- CONFIGURAÇÃO ---
 TARGET = "crash_type"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
-# ----------------------------
+FILE_TAG = "accidents"
+EVAL_METRIC = "auc" # Métrica pedida para Dataset 1
+DELTA_IMPROVE = 0.0005
 
-# Hiperparâmetros para estudo
-ITERATIONS = [100, 300, 500, 700, 1000]
-PENALTIES = ["l2", "l1"]
-os.makedirs("images", exist_ok=True)
+# --------------------
 
-# Load data
+# --- Load data ---
 try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: 'train_scaled.csv' e 'test_scaled.csv' não encontrados.")
     exit()
 
-# Separar X e y
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
 trnX = trn_df.drop(columns=[TARGET])
@@ -37,145 +36,161 @@ trnY = trn_df[TARGET]
 tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
 
-# --- Hyperparameters study (Tunning de max_iter e penalty) ---
-acc_values = {}
-prec_values = {}
-rec_values = {}
+labels = sorted(trnY.unique())
+vars_names = trnX.columns.tolist()
+os.makedirs("images", exist_ok=True)
 
-best_model, best_score, best_params = None, 0, None
+print(f"Dados (Accidents): Train={len(trnX)}, Test={len(tstX)}")
+print(f"Labels: {labels}")
 
-print("--- Estudo de Hiperparâmetros (Regressão Logística) ---")
+# --- 1. Hyperparameter Study (Penalty & Iterations) ---
+# Iterações aumentadas para garantir convergência
+iter_range = [100, 300, 500, 1000, 1500, 2000]
+penalties = ["l2", "l1"]
 
-for pen in PENALTIES:
-    solver_choice = "liblinear"
+best_model = None
+best_score = 0
+best_params = {"name": "LR", "metric": EVAL_METRIC, "params": ()}
+
+values_auc = {}
+
+print(f"\n--- Estudo de Hiperparâmetros (LR - {EVAL_METRIC.upper()}) ---")
+
+for pen in penalties:
+    y_tst_values = []
+    print(f"Testing Penalty={pen}...")
     
-    acc_list = []
-    prec_list = []
-    rec_list = []
-    
-    for n_iter in ITERATIONS:
-        clf = LogisticRegression(penalty=pen, max_iter=n_iter, solver=solver_choice, random_state=42)
+    for n in iter_range:
+        # Solver liblinear suporta l1 e l2
+        clf = LogisticRegression(penalty=pen, max_iter=n, solver="liblinear", random_state=42)
+        clf.fit(trnX, trnY)
         
+        # Calcular AUC (precisa de probabilidades)
         try:
-            clf.fit(trnX, trnY)
-            y_pred = clf.predict(tstX)
-
-            acc = accuracy_score(tstY, y_pred)
-            prec = precision_score(tstY, y_pred, average="weighted", zero_division=0)
-            rec = recall_score(tstY, y_pred, average="weighted", zero_division=0)
-
-            acc_list.append(acc)
-            prec_list.append(prec)
-            rec_list.append(rec)
+            y_probs = clf.predict_proba(tstX)
+            if len(labels) > 2:
+                # Multiclasse OvR
+                score = roc_auc_score(tstY, y_probs, multi_class='ovr', average='weighted')
+            else:
+                score = roc_auc_score(tstY, y_probs[:, 1])
+        except:
+            score = 0.5
             
-            if acc > best_score:
-                best_model = clf
-                best_score = acc
-                best_params = (pen, n_iter)
+        y_tst_values.append(score)
+        
+        if score - best_score > DELTA_IMPROVE:
+            best_score = score
+            best_model = clf
+            best_params["params"] = (pen, n)
+            best_params["auc"] = score
 
-            print(f"Penalty={pen}, Iter={n_iter} -> Accuracy: {acc:.4f}, Precision: {prec:.4f}, Recall: {rec:.4f}")
-            
-        except Exception as e:
-            print(f"Erro ao treinar com Penalty={pen}, Iter={n_iter}: {e}")
-            acc_list.append(0)
-            prec_list.append(0)
-            rec_list.append(0)
+    values_auc[pen] = y_tst_values
+
+# Plot do Estudo
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(iter_range, values_auc,
+                     title=f"LR Hyperparameters ({EVAL_METRIC})",
+                     xlabel="Iterations", ylabel=EVAL_METRIC, percentage=True)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_lr_{EVAL_METRIC}_study.png")
+plt.close()
+
+print(f"Melhor LR: Penalty={best_params['params'][0]}, Iter={best_params['params'][1]} ({EVAL_METRIC.upper()}={best_score:.4f})")
 
 
-    acc_values[pen] = acc_list
-    prec_values[pen] = prec_list
-    rec_values[pen] = rec_list
+# --- 2. Best Model Results (Confusion Matrix) ---
+print("\n--- Gerando Matrizes de Confusão ---")
+prd_trn = best_model.predict(trnX)
+prd_tst = best_model.predict(tstX)
 
-# --- Plotagem dos Resultados (Gráfico sugerido: Estudo de Hiperparâmetros) ---
+plt.figure(figsize=(12, 8))
+plot_evaluation_results(best_params, trnY, prd_trn, tstY, prd_tst, labels)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_lr_best_model_eval.png")
+plt.close()
 
-# Plot Accuracy
-figure(figsize=(10, 6)) # Aumenta o tamanho da figura
-plot_multiline_chart(ITERATIONS, acc_values, title="Logistic Regression Accuracy",
-                     xlabel="Número de Iterações (max_iter)", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/lr_accuracy.png")
-close()
 
-# Plot Precision
-figure(figsize=(10, 6)) # Aumenta o tamanho da figura
-plot_multiline_chart(ITERATIONS, prec_values, title="Logistic Regression Precision",
-                     xlabel="Número de Iterações (max_iter)", ylabel="Precision", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/lr_precision.png")
-close()
+# --- 3. Overfitting Study (Evolution over Iterations) ---
+print("\n--- Gerando Gráfico de Overfitting ---")
+# Usamos o melhor penalty e variamos as iterações
+best_pen = best_params['params'][0]
+eval_iters = [50, 100, 300, 500, 1000, 1500, 2000, 2500]
 
-# Plot Recall
-figure(figsize=(10, 6)) # Aumenta o tamanho da figura
-plot_multiline_chart(ITERATIONS, rec_values, title="Logistic Regression Recall",
-                     xlabel="Número de Iterações (max_iter)", ylabel="Recall", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/lr_recall.png")
-close()
+auc_train = []
+auc_test = []
 
-# --- Best model performance e Overfitting Study ---
-y_trn_pred = best_model.predict(trnX)
-y_tst_pred = best_model.predict(tstX)
-
-metrics = {"Accuracy": accuracy_score, "Precision": precision_score, "Recall": recall_score}
-
-print(f"\n--- Descrição do Melhor Modelo LR ---")
-print(f"Hiperparâmetros encontrados: Penalty={best_params[0]}, Max_Iter={best_params[1]}")
-
-print("\n--- Performance do Melhor Modelo ---")
-for metric, func in metrics.items():
-    if metric == "Accuracy":
-        trn_val = func(trnY, y_trn_pred)
-        tst_val = func(tstY, y_tst_pred)
+for n in eval_iters:
+    clf = LogisticRegression(penalty=best_pen, max_iter=n, solver="liblinear", random_state=42)
+    clf.fit(trnX, trnY)
+    
+    # AUC Train
+    y_probs_trn = clf.predict_proba(trnX)
+    if len(labels) > 2:
+        s_trn = roc_auc_score(trnY, y_probs_trn, multi_class='ovr', average='weighted')
     else:
-        trn_val = func(trnY, y_trn_pred, average="weighted", zero_division=0)
-        tst_val = func(tstY, y_tst_pred, average="weighted", zero_division=0)
+        s_trn = roc_auc_score(trnY, y_probs_trn[:, 1])
+    
+    # AUC Test
+    y_probs_tst = clf.predict_proba(tstX)
+    if len(labels) > 2:
+        s_tst = roc_auc_score(tstY, y_probs_tst, multi_class='ovr', average='weighted')
+    else:
+        s_tst = roc_auc_score(tstY, y_probs_tst[:, 1])
+        
+    auc_train.append(s_trn)
+    auc_test.append(s_tst)
 
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(
+    eval_iters,
+    {"Train": auc_train, "Test": auc_test},
+    title=f"LR Overfitting Study (Penalty={best_pen})",
+    xlabel="Iterations",
+    ylabel="AUC",
+    percentage=True
+)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_lr_overfitting.png")
+plt.close()
 
 
-# [cite_start]Overfitting Study (Gráfico sugerido: Estudo de Overfitting) [cite: 25]
-data_overfit = {
-    'Dataset': ['Train', 'Test'],
-    'Accuracy': [
-        accuracy_score(trnY, y_trn_pred),
-        accuracy_score(tstY, y_tst_pred)
-    ]
-}
-
-figure(figsize=(8, 5)) # Tamanho razoável
-plot_bar_chart(data_overfit['Dataset'], data_overfit['Accuracy'], title=f"Overfitting Study - Regressão Logística", ylabel="Accuracy", percentage=True)
-plt.tight_layout() # NOVO: Ajusta o layout
-savefig("images/lr_overfitting.png")
-close()
-
-
-# --- Variáveis' Importance (Gráfico sugerido: Variáveis' importance) ---
+# --- 4. Feature Importance ---
 if hasattr(best_model, 'coef_'):
-    print("\n--- Variáveis Mais Importantes ---")
+    print("\n--- Feature Importance ---")
+    # Para multiclasse, coef_ é (n_classes, n_features).
+    # Vamos pegar no valor absoluto máximo de cada feature entre todas as classes.
+    # Isto diz-nos "quão importante é esta variável para distinguir PELO MENOS UMA classe".
+    importance = np.max(np.abs(best_model.coef_), axis=0)
     
-    # Calcular a magnitude (valor absoluto) do coeficiente máximo para cada feature
-    # Isso funciona mesmo se a importância for 0 para a maioria das classes
-    importance = pd.Series(best_model.coef_.T.max(axis=1), index=trnX.columns)
-    
-    # Selecionar as top 10 features por importância absoluta
+    # Ordenar
+    indices = np.argsort(importance)[::-1]
     top_n = 10
-    top_importance = importance.abs().sort_values(ascending=False).head(top_n)
-
-    # Plotar a importância das variáveis
-    figure(figsize=(12, 6)) # NOVO: Tamanho maior para acomodar labels no eixo X
-    plot_bar_chart(top_importance.index.to_list(), top_importance.values.tolist(),
-                   title=f"Importância das {top_n} Melhores Variáveis (Coeficientes Máx Absoluto)",
-                   ylabel="Importância (Coeficiente Absoluto)", percentage=False)
     
-    # NOVO: Rotacionar as labels do eixo X para caberem
-    plt.xticks(rotation=45, ha='right', fontsize=7)
+    elems = []
+    imp_values = []
     
-    plt.tight_layout() # NOVO: Ajuste final do layout
-    savefig("images/lr_feature_importance.png")
-    close()
+    for i in range(top_n):
+        idx = indices[i]
+        elems.append(vars_names[idx])
+        imp_values.append(importance[idx])
+
+    plt.figure(figsize=(10, 8))
+    # Usar plot_horizontal_bar_chart se disponível
+    try:
+        plot_horizontal_bar_chart(
+            elems, imp_values, 
+            title=f"LR Variable Importance (Max Abs Coef)", 
+            xlabel="Coefficient Magnitude", ylabel="Variables", percentage=False
+        )
+    except:
+        plt.barh(elems[::-1], imp_values[::-1], color='skyblue')
+        plt.title("LR Variable Importance")
+        plt.xlabel("Abs Coefficient")
     
-    print(top_importance)
-    print(f"\nGráfico 'lr_feature_importance.png' guardado na pasta 'images'.")
+    plt.tight_layout()
+    plt.savefig(f"images/{FILE_TAG}_lr_vars_ranking.png")
+    plt.close()
+    
+    print("Top 3 Variáveis:", elems[:3])
 
-
-print("\nGráficos da Regressão Logística guardados na pasta 'images'.")
+print("\nProcesso concluído (LR Accidents).")

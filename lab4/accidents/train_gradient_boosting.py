@@ -35,6 +35,20 @@ if TARGET not in trn_df.columns:
     print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
+# --- REMOVER DATA LEAKAGE ---
+# Adicionei 'most_severe_injury' à lista de remoção
+leakage_cols = ['injuries_total', 'most_severe_injury']
+
+cols_to_drop_trn = [c for c in leakage_cols if c in trn_df.columns]
+cols_to_drop_tst = [c for c in leakage_cols if c in tst_df.columns]
+
+if len(cols_to_drop_trn) > 0:
+    print(f"--- A remover Data Leakage: {cols_to_drop_trn} ---")
+    trn_df = trn_df.drop(columns=cols_to_drop_trn)
+
+if len(cols_to_drop_tst) > 0:
+    tst_df = tst_df.drop(columns=cols_to_drop_tst)
+
 # --- SAMPLING (Se necessário) ---
 if trn_df.shape[0] > SAMPLE_SIZE:
     print(f"--- Dataset grande. A usar sample de {SAMPLE_SIZE} linhas para GB... ---")
@@ -58,7 +72,7 @@ def gradient_boosting_study(trnX, trnY, tstX, tstY,
                             nr_max_trees=200, lag=50, metric=EVAL_METRIC):
     
     n_estimators = [10] + [i for i in range(50, nr_max_trees + 1, lag)]
-    # As profundidades pedidas explicitamente
+    # Profundidades pedidas: 2, 5, 7
     max_depths = [2, 5, 7]        
     learning_rates = [0.1, 0.3, 0.5] 
 
@@ -185,9 +199,10 @@ if hasattr(best_model, 'feature_importances_'):
     elems = []
     imp_values = []
     for i in range(10):
-        idx = indices[i]
-        elems.append(VARS[idx])
-        imp_values.append(importances[idx])
+        if i < len(indices):
+            idx = indices[i]
+            elems.append(VARS[idx])
+            imp_values.append(importances[idx])
 
     plt.figure(figsize=(10, 8))
     plt.barh(elems[::-1], imp_values[::-1], color='skyblue')

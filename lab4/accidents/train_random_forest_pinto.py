@@ -1,227 +1,236 @@
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg") # Previne erros de GUI no terminal
 
 import os
 import pandas as pd
-from numpy import array, ndarray, std, argsort
-from matplotlib.pyplot import subplots, figure, savefig, close
+from numpy import array, argsort, std
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score
+# Importar AUC e outras métricas
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
 from sklearn.tree import plot_tree
-from dslabs_functions import plot_multiline_chart, plot_bar_chart, plot_horizontal_bar_chart
+from dslabs_functions import plot_multiline_chart, plot_horizontal_bar_chart, plot_evaluation_results
 
-# Definições auxiliares
-HEIGHT = 6
-CLASS_EVAL_METRICS = {"accuracy": accuracy_score}
-DELTA_IMPROVE = 0.0005
-
-# --- VARIÁVEIS DE DADOS PREPARADOS ---
+# ----------------------------- Config -----------------------------
 TARGET = "crash_type"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
 FILE_TAG = "accidents"
-EVAL_METRIC = "accuracy"
-# ------------------------------------
+# Métrica principal para Dataset 1
+EVAL_METRIC = "auc" 
+DELTA_IMPROVE = 0.0005
+
+# Sampling para Random Forest (como é pesado, usamos sample se for enorme)
+SAMPLE_SIZE = 10000 
+# ------------------------------------------------------------------
 
 # --- Load data ---
 try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: train_scaled.csv ou test_scaled.csv não encontrados.")
     exit()
 
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
-trnX = trn_df.drop(columns=[TARGET])
-trnY = trn_df[TARGET]
+# --- SAMPLING ---
+if trn_df.shape[0] > SAMPLE_SIZE:
+    print(f"--- Dataset grande. A usar sample de {SAMPLE_SIZE} linhas para RF... ---")
+    trn_sample = trn_df.sample(n=SAMPLE_SIZE, random_state=42)
+    trnX = trn_sample.drop(columns=[TARGET])
+    trnY = trn_sample[TARGET]
+else:
+    trnX = trn_df.drop(columns=[TARGET])
+    trnY = trn_df[TARGET]
+
 tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
-LABELS = sorted(trnY.unique())
+
 VARS = trnX.columns.tolist()
-
+labels = sorted(trnY.unique())
 os.makedirs("images", exist_ok=True)
-print(f"Train#={len(trnX)} Test#={len(tstX)}")
-print(f"Labels={LABELS}")
+print(f"Dados prontos (Accidents): Train (Sample)={len(trnX)}, Test={len(tstX)}")
 
-# --- Hyperparameters study function (OTIMIZADO) ---
-def random_forests_study(
-    trnX: pd.DataFrame,
-    trnY: pd.Series,
-    tstX: pd.DataFrame,
-    tstY: pd.Series,
-    nr_max_trees: int = 500,
-    lag: int = 200,
-    metric: str = EVAL_METRIC,
-) -> tuple[RandomForestClassifier | None, dict]:
-    
-    n_estimators: list[int] = [10] + [i for i in range(100, nr_max_trees + 1, lag)]
-    max_depths: list[int] = [10, 20]
-    max_features: list[float] = [0.3, 0.9]
-    
-    best_model: RandomForestClassifier | None = None
-    best_params: dict = {"name": "RF", "metric": metric, "params": ()}
-    best_performance: float = 0.0
 
-    cols: int = len(max_depths)
+# ----------------- Hyperparameter Study (Optimization by AUC) -----------------
+def random_forests_study(trnX, trnY, tstX, tstY,
+                         nr_max_trees=500, lag=100, metric=EVAL_METRIC):
+    
+    n_estimators = [10] + [i for i in range(50, nr_max_trees + 1, lag)]
+    # Profundidades pedidas
+    max_depths = [2, 5, 7]
+    # Features (percentagem)
+    max_features = [0.1, 0.3, 0.5, 0.7, 0.9]
+
+    best_model = None
+    best_params = {"name": "RF", "metric": metric, "params": ()}
+    best_perf = 0.0
+
+    cols = len(max_depths)
     _, axs = plt.subplots(1, cols, figsize=(cols * 5, 5), squeeze=False)
-    
-    print("\n--- Estudo de Hiperparâmetros (Random Forest) ---")
 
-    for i in range(len(max_depths)):
-        d: int = max_depths[i]
+    print("\n--- Hyperparameter Study: Random Forest (AUC) ---")
+    
+    for i, d in enumerate(max_depths):
         values = {}
+        print(f"   > Testing Depth={d}...")
         for f in max_features:
-            y_tst_values: list[float] = []
+            y_test_vals = []
             for n in n_estimators:
-                clf = RandomForestClassifier(n_estimators=n, max_depth=d, max_features=f, random_state=42, n_jobs=-1)
+                clf = RandomForestClassifier(n_estimators=n, max_depth=d, max_features=f, 
+                                             random_state=42, n_jobs=-1)
                 clf.fit(trnX, trnY)
-                prdY: array = clf.predict(tstX)
                 
-                eval_score: float = CLASS_EVAL_METRICS[metric](tstY, prdY)
-                y_tst_values.append(eval_score)
-                
-                if eval_score - best_performance > DELTA_IMPROVE:
-                    best_performance = eval_score
+                # Para AUC, precisamos das probabilidades
+                try:
+                    y_probs = clf.predict_proba(tstX)
+                    if len(labels) > 2:
+                        score = roc_auc_score(tstY, y_probs, multi_class='ovr', average='weighted')
+                    else:
+                        score = roc_auc_score(tstY, y_probs[:, 1])
+                except:
+                    score = 0.5
+
+                y_test_vals.append(score)
+
+                if score - best_perf > DELTA_IMPROVE:
+                    best_perf = score
                     best_params["params"] = (d, f, n)
+                    best_params["auc"] = score
                     best_model = clf
-            values[f'{f*100:.0f}%'] = y_tst_values
+            
+            values[f'F={f}'] = y_test_vals
 
         plot_multiline_chart(
             n_estimators,
             values,
             ax=axs[0, i],
-            title=f"RF Accuracy vs Trees (Depth={d})",
-            xlabel="Número de Árvores (n_estimators)",
-            ylabel=metric.capitalize(),
-            percentage=True,
+            title=f"RF AUC (Depth={d})",
+            xlabel="Nr Estimators",
+            ylabel="AUC",
+            percentage=True
         )
         axs[0, i].legend(title="Max Features", fontsize=8)
-    
+
     plt.tight_layout()
-    plt.savefig(f"images/{FILE_TAG}_rf_{metric}_study_otimizado.png")
+    plt.savefig(f"images/{FILE_TAG}_rf_{EVAL_METRIC}_study.png")
     plt.close()
 
-    print(f'Melhor RF encontrado: {best_params["params"][2]} árvores (Depth={best_params["params"][0]} e Max Features={best_params["params"][1]})')
+    print(f"Melhor RF encontrado: Depth={best_params['params'][0]}, MaxFeatures={best_params['params'][1]}, Estimators={best_params['params'][2]} (AUC={best_perf:.4f})")
     return best_model, best_params
 
-# --- Execução do Estudo OTIMIZADO ---
-best_model, params = random_forests_study(
-    trnX,
-    trnY,
-    tstX,
-    tstY,
-    nr_max_trees=500,
-    lag=200,
-    metric=EVAL_METRIC,
-)
+# Executar estudo
+best_model, params = random_forests_study(trnX, trnY, tstX, tstY, nr_max_trees=500, lag=100)
 
 
-# --- Best model performance e Overfitting Study ---
-prd_trn: array = best_model.predict(trnX)
-prd_tst: array = best_model.predict(tstX)
+# ----------------- Best Model Results (Confusion Matrix) -----------------
+print("\n--- Gerando Matrizes de Confusão (Best Model) ---")
+prd_trn = best_model.predict(trnX)
+prd_tst = best_model.predict(tstX)
 
-metrics = {
-    "Accuracy": accuracy_score,
-    "Precision": lambda t, p: precision_score(t, p, average="weighted", zero_division=0),
-    "Recall": lambda t, p: recall_score(t, p, average="weighted", zero_division=0),
-}
-
-print(f"\n--- Descrição do Melhor Modelo RF ---")
-print(f"Hiperparâmetros encontrados: Max_Depth={params['params'][0]}, Max_Features={params['params'][1]}, Estimators={params['params'][2]}")
-
-print("\n--- Performance do Melhor Modelo ---")
-for metric, func in metrics.items():
-    trn_val = func(trnY, prd_trn)
-    tst_val = func(tstY, prd_tst)
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
-
-# --- Overfitting Study (Ajustado) ---
-d_max: int = params["params"][0]
-feat: float = params["params"][1]
-nr_estimators_test: list[int] = [i for i in range(10, 501, 100)]
-
-y_tst_values: list[float] = []
-y_trn_values: list[float] = []
-
-for n in nr_estimators_test:
-    clf = RandomForestClassifier(n_estimators=n, max_depth=d_max, max_features=feat, random_state=42)
-    clf.fit(trnX, trnY)
-    y_tst_values.append(accuracy_score(tstY, clf.predict(tstX)))
-    y_trn_values.append(accuracy_score(trnY, clf.predict(trnX)))
-
-figure(figsize=(10, 6))
-plot_multiline_chart(
-    nr_estimators_test,
-    {"Train": y_trn_values, "Test": y_tst_values},
-    title=f"RF Overfitting Study (Depth={d_max}, Features={feat})",
-    xlabel="Número de Árvores (n_estimators)",
-    ylabel=str(EVAL_METRIC).capitalize(),
-    percentage=True)
+plt.figure(figsize=(12, 8))
+plot_evaluation_results(params, trnY, prd_trn, tstY, prd_tst, labels)
 plt.tight_layout()
-savefig(f"images/{FILE_TAG}_rf_{EVAL_METRIC}_overfitting.png")
-close()
+plt.savefig(f"images/{FILE_TAG}_rf_best_model_eval.png")
+plt.close()
+print("Gráfico 'rf_best_model_eval.png' guardado.")
 
 
-# --- Variáveis' Importance ---
+# ----------------- Overfitting Study (AUC) -----------------
+d_max, feat_best = params['params'][0], params['params'][1]
+nr_test_estimators = [10, 50, 100, 150, 200, 300, 400, 500]
+
+y_trn_vals, y_tst_vals = [], []
+print("\n--- Gerando Gráfico de Overfitting (AUC)... ---")
+
+for n in nr_test_estimators:
+    clf = RandomForestClassifier(n_estimators=n, max_depth=d_max, max_features=feat_best, random_state=42, n_jobs=-1)
+    clf.fit(trnX, trnY)
+    
+    # Calcular AUC
+    y_probs_trn = clf.predict_proba(trnX)
+    y_probs_tst = clf.predict_proba(tstX)
+    
+    if len(labels) > 2:
+        auc_trn = roc_auc_score(trnY, y_probs_trn, multi_class='ovr', average='weighted')
+        auc_tst = roc_auc_score(tstY, y_probs_tst, multi_class='ovr', average='weighted')
+    else:
+        auc_trn = roc_auc_score(trnY, y_probs_trn[:, 1])
+        auc_tst = roc_auc_score(tstY, y_probs_tst[:, 1])
+
+    y_trn_vals.append(auc_trn)
+    y_tst_vals.append(auc_tst)
+
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(
+    nr_test_estimators,
+    {"Train": y_trn_vals, "Test": y_tst_vals},
+    title=f"RF Overfitting - AUC (Depth={d_max}, Feat={feat_best})",
+    xlabel="Nr Estimators",
+    ylabel="AUC",
+    percentage=True
+)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_rf_overfitting.png")
+plt.close()
+print("Gráfico 'rf_overfitting.png' guardado.")
+
+
+# ----------------- Feature Importance -----------------
 if hasattr(best_model, 'feature_importances_'):
-    print("\n--- Variáveis Mais Importantes ---")
-    
+    print("\n--- Feature Importance ---")
     importances = best_model.feature_importances_
-    indices: list[int] = argsort(importances)[::-1]
     
-    elems = [VARS[idx] for idx in indices[:10]]
-    imp_values = [importances[idx] for idx in indices[:10]]
+    # Calcular desvio padrão entre as árvores (como no código do professor)
+    std_dev = std([tree.feature_importances_ for tree in best_model.estimators_], axis=0)
     
-    figure(figsize=(10, 6))
-    ax = plt.gca()
-    plot_horizontal_bar_chart(
-        elems,
-        imp_values,
-        title="Importância das 10 Melhores Variáveis (Random Forest)",
-        xlabel="Importância",
-        ylabel="Variáveis",
-        percentage=False,
-    )
+    indices = argsort(importances)[::-1]
     
-    for container in ax.containers:
-        try:
-            plt.bar_label(container, fmt='%.4f', padding=5, fontsize=8)
-        except:
-            pass
+    elems = []
+    imp_values = []
+    stdevs = []
     
+    for i in range(10): # Top 10
+        idx = indices[i]
+        elems.append(VARS[idx])
+        imp_values.append(importances[idx])
+        stdevs.append(std_dev[idx])
+
+    plt.figure(figsize=(10, 8))
+    # Usamos o plot_horizontal_bar_chart se disponível, senão matplotlib puro
+    try:
+        plot_horizontal_bar_chart(
+            elems, imp_values, error=stdevs, 
+            title="RF Variable Importance", xlabel="Importance", ylabel="Variables", percentage=True
+        )
+    except:
+        plt.barh(elems[::-1], imp_values[::-1], xerr=stdevs[::-1], color='skyblue')
+        plt.xlabel("Importance")
+        plt.title("RF Variable Importance")
+
     plt.tight_layout()
-    savefig(f"images/{FILE_TAG}_rf_{EVAL_METRIC}_vars_ranking.png")
-    close()
-    
-    print(pd.Series(imp_values, index=elems))
-    print("\nGráfico de importância guardado.")
+    plt.savefig(f"images/{FILE_TAG}_rf_vars_ranking.png")
+    plt.close()
+    print("Gráfico 'rf_vars_ranking.png' guardado.")
 
-
-# ----------------------------------------------------
-# --- Model Learnt (Decision Tree Visualization) ---
-# ----------------------------------------------------
-print("\n--- RF Tree Visualization (Model Learnt) ---")
-
+# ----------------- Model Learnt (Tree Visualization) -----------------
+print("\n--- Visualização de uma Árvore ---")
 try:
-    best_tree = best_model.estimators_[0]   # pick the first tree
-    plt.figure(figsize=(18, 10))
-    plot_tree(
-        best_tree,
-        feature_names=VARS,
-        class_names=[str(c) for c in LABELS],
-        filled=True,
-        max_depth=4,     # limit depth so the graph fits in the PDF
-        fontsize=7
-    )
-    savefig("images/accidents_rf_tree.png", bbox_inches="tight")
-    close()
-    print("Gráfico 'accidents_rf_tree.png' criado com sucesso.")
-
+    # Vamos buscar a primeira árvore do Random Forest
+    tree_to_plot = best_model.estimators_[0]
+    
+    plt.figure(figsize=(20, 10))
+    plot_tree(tree_to_plot, feature_names=VARS, class_names=[str(c) for c in labels],
+              max_depth=3, filled=True, rounded=True, fontsize=9)
+    plt.title(f"Random Forest - Example Tree (Depth={d_max})")
+    plt.tight_layout()
+    plt.savefig(f"images/{FILE_TAG}_rf_tree_viz.png")
+    plt.close()
+    print("Gráfico 'rf_tree_viz.png' guardado.")
 except Exception as e:
-    print(f"Falha ao gerar modelo aprendido (árvore). Erro: {e}")
+    print(f"Não foi possível gerar a árvore: {e}")
 
-print("\nGráficos do Random Forest concluídos e guardados na pasta 'images'.")
+print("\nProcesso concluído (Accidents).")

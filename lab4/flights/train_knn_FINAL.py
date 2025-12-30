@@ -1,66 +1,56 @@
+import matplotlib
+matplotlib.use("Agg") # Previne erros de GUI
+
 import os
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from matplotlib.pyplot import figure, savefig, close
-from dslabs_functions import plot_multiline_chart, plot_bar_chart
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from dslabs_functions import plot_multiline_chart, plot_evaluation_results
 
-# --- CONFIGURAÇÃO DE FONTE GLOBAL ---
-plt.rcParams.update({'font.size': 14}) 
-# ------------------------------------
-
-# --- VARIÁVEIS DE DADOS PREPARADOS ---
+# --- CONFIGURAÇÃO ---
 TARGET = "Cancelled"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
 FILE_TAG = "flights"
+EVAL_METRIC = "f1" # Dataset 2 exige F1 Score
+DELTA_IMPROVE = 0.0005
 
-# Hiperparâmetros para estudo
-K_MAX = 9
-DISTANCES = ["manhattan", "euclidean", "chebyshev"]
+# --- AMOSTRAGEM ---
+# KNN é extremamente lento com +50k linhas. 
+# 10.000 é um bom compromisso para o estudo demorar menos de 5 min.
+SAMPLE_SIZE = 5000 
+# --------------------
 
-os.makedirs("images", exist_ok=True)
-
-# --- 1. CARREGAR DADOS ---
+# --- Load data ---
 try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: 'train_scaled.csv' e 'test_scaled.csv' não encontrados.")
     exit()
 
-# --- 2. BLOCO CRÍTICO: REMOVER DATA LEAKAGE ---
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
+    exit()
+
+# --- REMOVER DATA LEAKAGE ---
 cols_to_drop = [
-    'ArrDelay', 'DepDelay', 'ActualElapsedTime', 
-    'AirTime', 'ArrTime', 'DepTime', 
-    'WheelsOff', 'WheelsOn', 'TaxiIn', 'TaxiOut',
-    'Diverted', 
-    'ArrivalDelayGroups', 'DepartureDelayGroups',
-    'ArrDel15', 'DepDel15',
+    'ArrDelay', 'DepDelay', 'ActualElapsedTime', 'AirTime', 'ArrTime', 'DepTime', 
+    'WheelsOff', 'WheelsOn', 'TaxiIn', 'TaxiOut', 'Diverted', 
+    'ArrivalDelayGroups', 'DepartureDelayGroups', 'ArrDel15', 'DepDel15',
     'ArrDelayMinutes', 'DepDelayMinutes'
 ]
-
 cols_in_train = [c for c in cols_to_drop if c in trn_df.columns]
-cols_in_test = [c for c in cols_to_drop if c in tst_df.columns]
-
 if len(cols_in_train) > 0:
     print(f"--- A remover Data Leakage ({len(cols_in_train)} colunas)... ---")
     trn_df = trn_df.drop(columns=cols_in_train)
-    tst_df = tst_df.drop(columns=cols_in_test)
+    tst_df = tst_df.drop(columns=[c for c in cols_to_drop if c in tst_df.columns])
 
-# --- 3. OTIMIZAÇÃO CRÍTICA: SAMPLING ---
-# O KNN é demasiado lento para o dataset completo (>50k linhas).
-# Vamos usar uma amostra representativa.
-SAMPLE_SIZE = 5000 
-
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
-    exit()
-
+# --- SAMPLING ---
 if trn_df.shape[0] > SAMPLE_SIZE:
-    print(f"[Aviso] Dataset grande ({trn_df.shape[0]} linhas).")
-    print(f"-> A usar amostragem aleatória de {SAMPLE_SIZE} linhas para permitir a execução.")
+    print(f"--- Dataset grande. A usar sample de {SAMPLE_SIZE} linhas para KNN... ---")
     trn_sample = trn_df.sample(n=SAMPLE_SIZE, random_state=42)
     trnX = trn_sample.drop(columns=[TARGET])
     trnY = trn_sample[TARGET]
@@ -71,124 +61,99 @@ else:
 tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
 
-print(f"Dados prontos para KNN: Train={len(trnX)}, Test={len(tstX)}")
+labels = sorted(trnY.unique())
+os.makedirs("images", exist_ok=True)
+print(f"Dados (Flights): Train (Sample)={len(trnX)}, Test={len(tstX)}")
 
-# --- 4. ESTUDO DE HIPERPARÂMETROS ---
-acc_values = {}
-prec_values = {}
-rec_values = {}
 
-best_model, best_score, best_params = None, 0, None
+# --- 1. Hyperparameter Study (Distance & K) - F1 ---
+k_max = 25
+lag = 2
+kvalues = [i for i in range(1, k_max + 1, lag)]
+distances = ['manhattan', 'euclidean', 'chebyshev']
 
-k_values = list(range(1, K_MAX + 1))
+best_model = None
+best_params = {'name': 'KNN', 'metric': EVAL_METRIC, 'params': ()}
+best_performance = 0.0
 
-print("\n--- Estudo de Hiperparâmetros (KNN) ---")
+values = {}
 
-for dist in DISTANCES:
-    acc_list = []
-    prec_list = []
-    rec_list = []
+print(f"\n--- Estudo de Hiperparâmetros (KNN - F1) ---")
 
-    print(f"A testar distância: {dist}...") 
-
-    for k in k_values:
-        # n_jobs=-1 usa todos os processadores do computador
-        clf = KNeighborsClassifier(n_neighbors=k, metric=dist, n_jobs=-1)
+for d in distances:
+    y_tst_values = []
+    print(f"Testing Distance={d}...")
+    for k in kvalues:
+        # n_jobs=-1 usa todos os cores do CPU para acelerar
+        clf = KNeighborsClassifier(n_neighbors=k, metric=d, n_jobs=-1)
         clf.fit(trnX, trnY)
         
-        # Previsão
-        y_tst_pred = clf.predict(tstX)
-
-        acc = accuracy_score(tstY, y_tst_pred)
-        prec = precision_score(tstY, y_tst_pred, average="weighted", zero_division=0)
-        rec = recall_score(tstY, y_tst_pred, average="weighted", zero_division=0)
-
-        acc_list.append(acc)
-        prec_list.append(prec)
-        rec_list.append(rec)
+        # Calcular F1 Score (Weighted)
+        y_pred = clf.predict(tstX)
+        score = f1_score(tstY, y_pred, average="weighted", zero_division=0)
+            
+        y_tst_values.append(score)
         
-        if acc > best_score:
+        if score - best_performance > DELTA_IMPROVE:
+            best_performance = score
+            best_params['params'] = (k, d)
+            best_params['f1'] = score
             best_model = clf
-            best_score = acc
-            best_params = (k, dist)
+            
+    values[d] = y_tst_values
 
-        print(f"   k={k} -> Accuracy: {acc:.4f}")
-
-    acc_values[dist] = acc_list
-    prec_values[dist] = prec_list
-    rec_values[dist] = rec_list
-
-# --- 5. PLOTAGEM DOS RESULTADOS ---
-
-# Plot Accuracy
-figure(figsize=(10, 6))
-plot_multiline_chart(k_values, acc_values,
-                     title="KNN Accuracy vs k",
-                     xlabel="k (Número de Vizinhos)", ylabel="Accuracy", percentage=True)
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(kvalues, values, title=f'KNN Models ({EVAL_METRIC})', xlabel='k', ylabel='F1-Score', percentage=True)
 plt.tight_layout()
-savefig(f"images/{FILE_TAG}_knn_accuracy.png")
-close()
+plt.savefig(f'images/{FILE_TAG}_knn_{EVAL_METRIC}_study.png')
+plt.close()
 
-# Plot Precision
-figure(figsize=(10, 6))
-plot_multiline_chart(k_values, prec_values,
-                     title="KNN Precision vs k",
-                     xlabel="k (Número de Vizinhos)", ylabel="Precision", percentage=True)
+print(f"Melhor KNN: k={best_params['params'][0]}, Distance={best_params['params'][1]} (F1={best_performance:.4f})")
+
+
+# --- 2. Best Model Results (Confusion Matrix) ---
+print("\n--- Gerando Matrizes de Confusão ---")
+prd_trn = best_model.predict(trnX)
+prd_tst = best_model.predict(tstX)
+
+plt.figure(figsize=(12, 8))
+plot_evaluation_results(best_params, trnY, prd_trn, tstY, prd_tst, labels)
 plt.tight_layout()
-savefig(f"images/{FILE_TAG}_knn_precision.png")
-close()
+plt.savefig(f"images/{FILE_TAG}_knn_best_model_eval.png")
+plt.close()
 
-# Plot Recall
-figure(figsize=(10, 6))
-plot_multiline_chart(k_values, rec_values,
-                     title="KNN Recall vs k",
-                     xlabel="k (Número de Vizinhos)", ylabel="Recall", percentage=True)
+
+# --- 3. Overfitting Study (Train vs Test Evolution) ---
+print("\n--- Gerando Gráfico de Overfitting (F1) ---")
+best_dist = best_params['params'][1]
+kvalues_overfit = [i for i in range(1, k_max + 1, 2)]
+
+f1_train = []
+f1_test = []
+
+for k in kvalues_overfit:
+    clf = KNeighborsClassifier(n_neighbors=k, metric=best_dist, n_jobs=-1)
+    clf.fit(trnX, trnY)
+    
+    # F1 Train
+    s_trn = f1_score(trnY, clf.predict(trnX), average="weighted", zero_division=0)
+    # F1 Test
+    s_tst = f1_score(tstY, clf.predict(tstX), average="weighted", zero_division=0)
+        
+    f1_train.append(s_trn)
+    f1_test.append(s_tst)
+
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(
+    kvalues_overfit,
+    {"Train": f1_train, "Test": f1_test},
+    title=f"KNN Overfitting (Distance={best_dist})",
+    xlabel="K",
+    ylabel="F1-Score",
+    percentage=True
+)
 plt.tight_layout()
-savefig(f"images/{FILE_TAG}_knn_recall.png")
-close()
+plt.savefig(f"images/{FILE_TAG}_knn_overfitting.png")
+plt.close()
 
-# --- 6. BEST MODEL PERFORMANCE ---
-
-print(f"\n--- Descrição do Melhor Modelo KNN ---")
-print(f"Hiperparâmetros encontrados: k={best_params[0]}, metric={best_params[1]}")
-
-# Recalcular previsões finais com o melhor modelo
-y_trn_pred_best = best_model.predict(trnX)
-y_tst_pred_best = best_model.predict(tstX)
-
-metrics = {"Accuracy": accuracy_score, "Precision": precision_score, "Recall": recall_score}
-
-print("\n--- Performance do Melhor Modelo ---")
-for metric, func in metrics.items():
-    if metric == "Accuracy":
-        trn_val = func(trnY, y_trn_pred_best)
-        tst_val = func(tstY, y_tst_pred_best)
-    else:
-        trn_val = func(trnY, y_trn_pred_best, average="weighted", zero_division=0)
-        tst_val = func(tstY, y_tst_pred_best, average="weighted", zero_division=0)
-
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
-
-# --- 7. OVERFITTING STUDY ---
-data_overfit = {
-    'Dataset': ['Train', 'Test'],
-    'Accuracy': [
-        accuracy_score(trnY, y_trn_pred_best),
-        accuracy_score(tstY, y_tst_pred_best)
-    ]
-}
-
-figure(figsize=(6, 5))
-ax = plt.gca()
-plot_bar_chart(data_overfit['Dataset'], data_overfit['Accuracy'],
-               title=f"Overfitting Study - KNN (k={best_params[0]})", ylabel="Accuracy", percentage=True)
-
-# HACK: Aumentar o tamanho do texto nas barras se a função do professor os desenhar
-for text in ax.texts:
-    text.set_fontsize(14)
-
-plt.tight_layout()
-savefig(f"images/{FILE_TAG}_knn_overfitting.png")
-close()
-
-print("\nGráficos do KNN concluídos e guardados na pasta 'images'.")
+print("\nProcesso concluído (KNN Flights).")

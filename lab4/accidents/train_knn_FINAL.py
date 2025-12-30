@@ -1,158 +1,159 @@
+import matplotlib
+matplotlib.use("Agg") # Previne erros de GUI
+
 import os
 import pandas as pd
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from matplotlib.pyplot import figure, savefig, close
-# Importamos matplotlib.pyplot como plt para o ajuste de layout
+import numpy as np
 import matplotlib.pyplot as plt
-# Assumo que 'dslabs_functions.py', 'plot_multiline_chart' e 'plot_bar_chart' estão disponíveis
-from dslabs_functions import plot_multiline_chart, plot_bar_chart
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from dslabs_functions import plot_multiline_chart, plot_evaluation_results
 
-# --- VARIÁVEIS DE DADOS PREPARADOS ---
+# --- CONFIGURAÇÃO ---
 TARGET = "crash_type"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
-# ------------------------------------
+FILE_TAG = "accidents"
+EVAL_METRIC = "auc" # Métrica para Dataset 1
+DELTA_IMPROVE = 0.0005
 
-# Hiperparâmetros para estudo
-K_MAX = 9
-DISTANCES = ["manhattan", "euclidean", "chebyshev"]
+# --- AMOSTRAGEM PARA KNN (MUITO IMPORTANTE) ---
+# KNN é lento com datasets grandes. Usamos amostragem.
+SAMPLE_SIZE = 10000 
+# --------------------
 
-os.makedirs("images", exist_ok=True)
-
-# Load data (Dados já separados e escalados)
+# --- Load data ---
 try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: 'train_scaled.csv' e 'test_scaled.csv' não encontrados.")
     exit()
 
-# Separar X e y
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
-trnX = trn_df.drop(columns=[TARGET])
-trnY = trn_df[TARGET]
+# --- SAMPLING ---
+if trn_df.shape[0] > SAMPLE_SIZE:
+    print(f"--- Dataset grande. A usar sample de {SAMPLE_SIZE} linhas para KNN... ---")
+    trn_sample = trn_df.sample(n=SAMPLE_SIZE, random_state=42)
+    trnX = trn_sample.drop(columns=[TARGET])
+    trnY = trn_sample[TARGET]
+else:
+    trnX = trn_df.drop(columns=[TARGET])
+    trnY = trn_df[TARGET]
+
 tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
 
+labels = sorted(trnY.unique())
+os.makedirs("images", exist_ok=True)
+print(f"Dados (Accidents): Train (Sample)={len(trnX)}, Test={len(tstX)}")
 
-# --- Hyperparameters study (Tuning de K e Distância) ---
-acc_values = {}
-prec_values = {}
-rec_values = {}
-score_values = {'train': [], 'test': []} # Para Overfitting Study
 
-best_model, best_score, best_params = None, 0, None
+# --- 1. Hyperparameter Study (Distance & K) - AUC ---
+k_max = 25
+lag = 2
+kvalues = [i for i in range(1, k_max + 1, lag)]
+distances = ['manhattan', 'euclidean', 'chebyshev']
 
-k_values = list(range(1, K_MAX + 1))
+best_model = None
+best_params = {'name': 'KNN', 'metric': EVAL_METRIC, 'params': ()}
+best_performance = 0.0
 
-print("--- Estudo de Hiperparâmetros (KNN - K-Nearest Neighbors) ---")
+values = {}
 
-for dist in DISTANCES:
-    acc_list = []
-    prec_list = []
-    rec_list = []
+print(f"\n--- Estudo de Hiperparâmetros (KNN - {EVAL_METRIC}) ---")
 
-    for k in k_values:
-        clf = KNeighborsClassifier(n_neighbors=k, metric=dist)
+for d in distances:
+    y_tst_values = []
+    print(f"Testing Distance={d}...")
+    for k in kvalues:
+        clf = KNeighborsClassifier(n_neighbors=k, metric=d)
         clf.fit(trnX, trnY)
         
-        # Previsão no Teste
-        y_tst_pred = clf.predict(tstX)
-
-        acc = accuracy_score(tstY, y_tst_pred)
-        prec = precision_score(tstY, y_tst_pred, average="weighted", zero_division=0)
-        rec = recall_score(tstY, y_tst_pred, average="weighted", zero_division=0)
-
-        acc_list.append(acc)
-        prec_list.append(prec)
-        rec_list.append(rec)
+        # Calcular AUC
+        try:
+            y_probs = clf.predict_proba(tstX)
+            if len(labels) > 2:
+                score = roc_auc_score(tstY, y_probs, multi_class='ovr', average='weighted')
+            else:
+                score = roc_auc_score(tstY, y_probs[:, 1])
+        except:
+            score = 0.5
+            
+        y_tst_values.append(score)
         
-        # Previsão no Treino (para Overfitting Study)
-        y_trn_pred = clf.predict(trnX)
-        score_values['train'].append(accuracy_score(trnY, y_trn_pred))
-        score_values['test'].append(acc)
-
-        if acc > best_score:
+        if score - best_performance > DELTA_IMPROVE:
+            best_performance = score
+            best_params['params'] = (k, d)
+            best_params['auc'] = score
             best_model = clf
-            best_score = acc
-            best_params = (k, dist)
+            
+    values[d] = y_tst_values
 
-        print(f"k={k}, metric={dist} -> Accuracy: {acc:.4f}")
-
-    acc_values[dist] = acc_list
-    prec_values[dist] = prec_list
-    rec_values[dist] = rec_list
-
-# --- Plotagem dos Resultados (Gráfico sugerido: Estudo de Hiperparâmetros) ---
-# Usamos figsize=(10, 6) para gráficos de linha com múltiplos dados
-
-# Plot Accuracy
-figure(figsize=(10, 6))
-plot_multiline_chart(k_values, acc_values,
-                     title="KNN Accuracy vs k",
-                     xlabel="k (Número de Vizinhos)", ylabel="Accuracy", percentage=True)
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(kvalues, values, title=f'KNN Models ({EVAL_METRIC})', xlabel='k', ylabel=EVAL_METRIC, percentage=True)
 plt.tight_layout()
-savefig("images/knn_accuracy.png")
-close()
+plt.savefig(f'images/{FILE_TAG}_knn_{EVAL_METRIC}_study.png')
+plt.close()
 
-# Plot Precision
-figure(figsize=(10, 6))
-plot_multiline_chart(k_values, prec_values,
-                     title="KNN Precision vs k",
-                     xlabel="k (Número de Vizinhos)", ylabel="Precision", percentage=True)
+print(f"Melhor KNN: k={best_params['params'][0]}, Distance={best_params['params'][1]} ({EVAL_METRIC.upper()}={best_performance:.4f})")
+
+
+# --- 2. Best Model Results (Confusion Matrix) ---
+print("\n--- Gerando Matrizes de Confusão ---")
+prd_trn = best_model.predict(trnX)
+prd_tst = best_model.predict(tstX)
+
+plt.figure(figsize=(12, 8))
+plot_evaluation_results(best_params, trnY, prd_trn, tstY, prd_tst, labels)
 plt.tight_layout()
-savefig("images/knn_precision.png")
-close()
+plt.savefig(f"images/{FILE_TAG}_knn_best_model_eval.png")
+plt.close()
 
-# Plot Recall
-figure(figsize=(10, 6))
-plot_multiline_chart(k_values, rec_values,
-                     title="KNN Recall vs k",
-                     xlabel="k (Número de Vizinhos)", ylabel="Recall", percentage=True)
-plt.tight_layout()
-savefig("images/knn_recall.png")
-close()
 
-# --- Best model performance e Overfitting Study ---
+# --- 3. Overfitting Study (Train vs Test Evolution) ---
+print("\n--- Gerando Gráfico de Overfitting (AUC) ---")
+best_dist = best_params['params'][1]
+kvalues_overfit = [i for i in range(1, k_max + 1, 2)]
 
-# Re-calcular previsões do melhor modelo (embora a precisão já esteja armazenada)
-y_trn_pred_best = best_model.predict(trnX)
-y_tst_pred_best = best_model.predict(tstX)
+auc_train = []
+auc_test = []
 
-metrics = {"Accuracy": accuracy_score, "Precision": precision_score, "Recall": recall_score}
-
-print(f"\n--- Descrição do Melhor Modelo KNN ---")
-print(f"Hiperparâmetros encontrados: k={best_params[0]}, metric={best_params[1]}")
-
-print("\n--- Performance do Melhor Modelo ---")
-for metric, func in metrics.items():
-    if metric == "Accuracy":
-        trn_val = func(trnY, y_trn_pred_best)
-        tst_val = func(tstY, y_tst_pred_best)
+for k in kvalues_overfit:
+    clf = KNeighborsClassifier(n_neighbors=k, metric=best_dist)
+    clf.fit(trnX, trnY)
+    
+    # AUC Train
+    y_probs_trn = clf.predict_proba(trnX)
+    if len(labels) > 2:
+        s_trn = roc_auc_score(trnY, y_probs_trn, multi_class='ovr', average='weighted')
     else:
-        trn_val = func(trnY, y_trn_pred_best, average="weighted", zero_division=0)
-        tst_val = func(tstY, y_tst_pred_best, average="weighted", zero_division=0)
+        s_trn = roc_auc_score(trnY, y_probs_trn[:, 1])
+    
+    # AUC Test
+    y_probs_tst = clf.predict_proba(tstX)
+    if len(labels) > 2:
+        s_tst = roc_auc_score(tstY, y_probs_tst, multi_class='ovr', average='weighted')
+    else:
+        s_tst = roc_auc_score(tstY, y_probs_tst[:, 1])
+        
+    auc_train.append(s_trn)
+    auc_test.append(s_tst)
 
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
-
-# Overfitting Study (Gráfico sugerido: Estudo de Overfitting)
-data_overfit = {
-    'Dataset': ['Train', 'Test'],
-    'Accuracy': [
-        accuracy_score(trnY, y_trn_pred_best),
-        accuracy_score(tstY, y_tst_pred_best)
-    ]
-}
-
-figure(figsize=(6, 4)) # Tamanho razoável
-plot_bar_chart(data_overfit['Dataset'], data_overfit['Accuracy'],
-               title=f"Overfitting Study - KNN (k={best_params[0]})", ylabel="Accuracy", percentage=True)
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(
+    kvalues_overfit,
+    {"Train": auc_train, "Test": auc_test},
+    title=f"KNN Overfitting (Distance={best_dist})",
+    xlabel="K",
+    ylabel="AUC",
+    percentage=True
+)
 plt.tight_layout()
-savefig("images/knn_overfitting.png")
-close()
+plt.savefig(f"images/{FILE_TAG}_knn_overfitting.png")
+plt.close()
 
-print("\nGráficos do KNN guardados na pasta 'images'.")
+print("\nProcesso concluído (KNN Accidents).")

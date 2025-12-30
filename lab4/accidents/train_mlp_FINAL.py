@@ -1,41 +1,40 @@
+import matplotlib
+matplotlib.use("Agg") # Previne erros de GUI
+
 import os
 import pandas as pd
-from matplotlib.pyplot import figure, savefig, close
+import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neural_network import MLPClassifier
-from dslabs_functions import plot_multiline_chart, plot_bar_chart
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from numpy import array, arange
-from dslabs_functions import plot_evaluation_results # Manter se necessário para o gráfico de performance
+from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from dslabs_functions import plot_multiline_chart, plot_line_chart, plot_evaluation_results
 
-# --- VARIÁVEIS DE DADOS PREPARADOS ---
+# --- CONFIGURAÇÃO ---
 TARGET = "crash_type"
 TRAIN_FILE = "train_scaled.csv"
 TEST_FILE = "test_scaled.csv"
-# Variável para controlar o incremento mínimo de melhoria para early stop (simulado)
+FILE_TAG = "accidents"
+EVAL_METRIC = "auc" 
 DELTA_IMPROVE = 0.0005
-# ------------------------------------
 
-# --- Hyperparameter Search Space ---
-NR_MAX_ITER = 2000
+# --- PARÂMETROS MLP ---
+NR_MAX_ITER = 3000
 LAG = 500
-learning_rates = [0.05, 0.005] # Ajustado para valores mais típicos para MLP
-lr_types = ["constant", "adaptive"]
-eval_metric = "accuracy"
+LEARNING_RATES = [0.1, 0.01, 0.001] 
+LR_TYPES = ["constant", "invscaling", "adaptive"]
 
-os.makedirs("images", exist_ok=True)
+# --------------------
 
-# Load data (Dados já separados e escalados)
+# --- Load data ---
 try:
     trn_df = pd.read_csv(TRAIN_FILE)
     tst_df = pd.read_csv(TEST_FILE)
 except FileNotFoundError:
-    print("Erro: Certifique-se de que 'train_scaled.csv' e 'test_scaled.csv' estão no diretório correto.")
+    print("Erro: 'train_scaled.csv' e 'test_scaled.csv' não encontrados.")
     exit()
 
-# Separar X e y
-if TARGET not in trn_df.columns or TARGET not in tst_df.columns:
-    print(f"Erro: Coluna alvo '{TARGET}' não encontrada nos ficheiros.")
+if TARGET not in trn_df.columns:
+    print(f"Erro: Target '{TARGET}' não encontrado.")
     exit()
 
 trnX = trn_df.drop(columns=[TARGET])
@@ -44,116 +43,176 @@ tstX = tst_df.drop(columns=[TARGET])
 tstY = tst_df[TARGET]
 
 labels = sorted(trnY.unique())
+os.makedirs("images", exist_ok=True)
+print(f"Dados (Accidents): Train={len(trnX)}, Test={len(tstX)}")
 
-# --- Hyperparameters study ---
+
+# --- 1. Hyperparameter Study (LR Types vs Rates) - AUC ---
+nr_iterations = [LAG] + [i for i in range(2 * LAG, NR_MAX_ITER + 1, LAG)]
+
 best_model = None
-best_params = {"name": "MLP", "metric": eval_metric, "params": ()}
+best_params = {"name": "MLP", "metric": EVAL_METRIC, "params": ()}
 best_performance = 0.0
-# Iterações a testar, incluindo o primeiro LAG
-nr_iterations = [LAG] + list(range(2 * LAG, NR_MAX_ITER + 1, LAG))
-hidden_layers = (50,) # Camada oculta simples (pode ser tunado mais tarde)
-solver_choice = "adam" # Adam é mais robusto que SGD para a maioria dos problemas
-activation_choice = "relu" # ReLU é mais comum que logistic
 
-for lr_type in lr_types:
-    values_acc = {}
-    print(f"\n--- Estudo de Hiperparâmetros MLP (LR Type: {lr_type}) ---")
+# Subplots: Um gráfico por LR Type
+cols = len(LR_TYPES)
+_, axs = plt.subplots(1, cols, figsize=(cols * 5, 5), squeeze=False)
 
-    for lr in learning_rates:
+print(f"\n--- Estudo de Hiperparâmetros (MLP - {EVAL_METRIC}) ---")
+
+for i, lr_type in enumerate(LR_TYPES):
+    values = {}
+    print(f"   > Testing LR Type: {lr_type}...")
+
+    for lr in LEARNING_RATES:
         y_tst_values = []
         
-        # Inicialização do modelo fora do loop de iteração para usar warm_start
-        # Max_iter=LAG e warm_start=True permitem treinar em blocos de LAG iterações
+        # Warm_start permite continuar o treino
         clf = MLPClassifier(
-            hidden_layer_sizes=hidden_layers,
             learning_rate=lr_type,
             learning_rate_init=lr,
             max_iter=LAG,
-            warm_start=True, # NOVO: Essencial para treinar incrementalmente
-            activation=activation_choice,
-            solver=solver_choice,
-            random_state=42,
+            warm_start=True,
+            activation="logistic", # Como no código do stor
+            solver="sgd",          # Necessário para 'learning_rate' ter efeito
+            verbose=False,
+            random_state=42
         )
-
-        current_n_iter = 0
         
-        for n_iter in nr_iterations:
-            # Treinar pelo número de iterações do LAG
+        for n in range(len(nr_iterations)):
             clf.fit(trnX, trnY)
-            current_n_iter += LAG # Acumula o número de iterações reais
-
-            prdY = clf.predict(tstX)
-            eval_score = accuracy_score(tstY, prdY) # Avaliação pela Accuracy
-            y_tst_values.append(eval_score)
             
-            # Atualizar melhor modelo
-            if eval_score - best_performance > DELTA_IMPROVE:
-                best_performance = eval_score
-                # Guarda o número total de iterações que o modelo levou até este ponto
-                best_params["params"] = (lr_type, lr, current_n_iter, hidden_layers)
-                # Cria uma cópia do classificador para o best_model
-                best_model = MLPClassifier(
-                    hidden_layer_sizes=hidden_layers, learning_rate=lr_type, learning_rate_init=lr,
-                    max_iter=current_n_iter, activation=activation_choice, solver=solver_choice, random_state=42
-                ).fit(trnX, trnY)
+            # Calcular AUC
+            try:
+                y_probs = clf.predict_proba(tstX)
+                if len(labels) > 2:
+                    score = roc_auc_score(tstY, y_probs, multi_class='ovr', average='weighted')
+                else:
+                    score = roc_auc_score(tstY, y_probs[:, 1])
+            except:
+                score = 0.5
+            
+            y_tst_values.append(score)
 
-            print(f"  LR={lr}, Iterations={current_n_iter} -> Accuracy: {eval_score:.4f}")
-
-        values_acc[f'LR={lr}'] = y_tst_values
+            if score - best_performance > DELTA_IMPROVE:
+                best_performance = score
+                best_params["params"] = (lr_type, lr, nr_iterations[n])
+                best_params["auc"] = score
+                best_model = clf
         
-    # Plotagem dos resultados da Accuracy para o tipo de LR
-    figure(figsize=(10, 6))
+        values[f'LR={lr}'] = y_tst_values
+
     plot_multiline_chart(
         nr_iterations,
-        values_acc,
-        title=f"MLP Hyperparameters (Accuracy vs Iterations) - {lr_type}",
-        xlabel="Número Total de Iterações",
-        ylabel=eval_metric.capitalize(),
+        values,
+        ax=axs[0, i],
+        title=f"MLP ({lr_type})",
+        xlabel="Iterations",
+        ylabel=EVAL_METRIC.upper(),
         percentage=True,
     )
-    plt.tight_layout()
-    savefig(f"images/mlp_{lr_type}_hyperparameters.png")
-    close()
+
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_mlp_{EVAL_METRIC}_study.png")
+plt.close()
+
+print(f"Melhor MLP: Type={best_params['params'][0]}, LR={best_params['params'][1]}, Iter={best_params['params'][2]} ({EVAL_METRIC}={best_performance:.4f})")
 
 
-# --- Best model performance e Overfitting Study ---
-
-# Re-avaliar o melhor modelo (para garantir que usamos a versão final)
-# O best_model foi copiado e treinado com o número ideal de iterações
+# --- 2. Best Model Results (Confusion Matrix) ---
+print("\n--- Gerando Matrizes de Confusão ---")
+# Resetar warm_start para False para garantir avaliação justa final
+# best_model já está treinado até ao ponto ótimo pelo loop anterior
 prd_trn = best_model.predict(trnX)
 prd_tst = best_model.predict(tstX)
 
-# Métricas
-metrics = {
-    "Accuracy": accuracy_score,
-    "Precision": lambda t, p: precision_score(t, p, average="weighted", zero_division=0),
-    "Recall": lambda t, p: recall_score(t, p, average="weighted", zero_division=0),
-}
-
-print(f"\n--- Descrição do Melhor Modelo MLP ---")
-print(f"Hiperparâmetros encontrados: LR Type={best_params['params'][0]}, LR={best_params['params'][1]}, Iters={best_params['params'][2]}")
-print(f"Estrutura: {best_params['params'][3]}, Solver: {solver_choice}, Activation: {activation_choice}")
-
-print("\n--- Performance do Melhor Modelo ---")
-for metric, func in metrics.items():
-    trn_val = func(trnY, prd_trn)
-    tst_val = func(tstY, prd_tst)
-    print(f"{metric} - Train: {trn_val:.4f}, Test: {tst_val:.4f}")
-
-# Overfitting Study (Gráfico sugerido: Estudo de Overfitting)
-data_overfit = {
-    'Dataset': ['Train', 'Test'],
-    'Accuracy': [
-        accuracy_score(trnY, prd_trn),
-        accuracy_score(tstY, prd_tst)
-    ]
-}
-
-figure(figsize=(6, 4))
-plot_bar_chart(data_overfit['Dataset'], data_overfit['Accuracy'],
-               title=f"Overfitting Study - MLP (Iters={best_params['params'][2]})", ylabel="Accuracy", percentage=True)
+plt.figure(figsize=(12, 8))
+plot_evaluation_results(best_params, trnY, prd_trn, tstY, prd_tst, labels)
 plt.tight_layout()
-savefig("images/mlp_overfitting.png")
-close()
+plt.savefig(f"images/{FILE_TAG}_mlp_best_model_eval.png")
+plt.close()
 
-print("\nGráficos do MLP concluídos e guardados na pasta 'images'.")
+
+# --- 3. Overfitting Study (Train vs Test Evolution) ---
+print("\n--- Gerando Gráfico de Overfitting (AUC) ---")
+best_lr_type = best_params['params'][0]
+best_lr = best_params['params'][1]
+
+# Usamos warm_start novamente para ver a evolução
+clf_overfit = MLPClassifier(
+    learning_rate=best_lr_type,
+    learning_rate_init=best_lr,
+    max_iter=LAG,
+    warm_start=True,
+    activation="logistic",
+    solver="sgd",
+    verbose=False,
+    random_state=42
+)
+
+auc_train = []
+auc_test = []
+steps = []
+
+current_iter = 0
+for i in range(len(nr_iterations)):
+    # O loop do warm_start acumula iterações. 
+    # Precisamos de chamar fit() várias vezes, incrementando o max_iter se não usarmos partial_fit.
+    # Mas com warm_start=True e max_iter fixo em LAG, ele treina MAIS LAG iterações a cada fit?
+    # Não, max_iter é o total. Temos de incrementar.
+    
+    total_iter = nr_iterations[i]
+    clf_overfit.set_params(max_iter=total_iter)
+    clf_overfit.fit(trnX, trnY)
+    
+    # AUC Train
+    y_probs_trn = clf_overfit.predict_proba(trnX)
+    if len(labels) > 2:
+        s_trn = roc_auc_score(trnY, y_probs_trn, multi_class='ovr', average='weighted')
+    else:
+        s_trn = roc_auc_score(trnY, y_probs_trn[:, 1])
+    
+    # AUC Test
+    y_probs_tst = clf_overfit.predict_proba(tstX)
+    if len(labels) > 2:
+        s_tst = roc_auc_score(tstY, y_probs_tst, multi_class='ovr', average='weighted')
+    else:
+        s_tst = roc_auc_score(tstY, y_probs_tst[:, 1])
+        
+    auc_train.append(s_trn)
+    auc_test.append(s_tst)
+    steps.append(total_iter)
+
+plt.figure(figsize=(10, 6))
+plot_multiline_chart(
+    steps,
+    {"Train": auc_train, "Test": auc_test},
+    title=f"MLP Overfitting (Type={best_lr_type}, LR={best_lr})",
+    xlabel="Iterations",
+    ylabel="AUC",
+    percentage=True
+)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_mlp_overfitting.png")
+plt.close()
+
+
+# --- 4. Loss Curve Analysis ---
+print("\n--- Gerando Loss Curve ---")
+# A loss curve está guardada no modelo
+loss_values = best_model.loss_curve_
+
+plt.figure(figsize=(10, 6))
+plot_line_chart(
+    np.arange(len(loss_values)),
+    loss_values,
+    title="Loss Curve (Best Model)",
+    xlabel="Iterations",
+    ylabel="Loss",
+    percentage=False
+)
+plt.tight_layout()
+plt.savefig(f"images/{FILE_TAG}_mlp_loss_curve.png")
+plt.close()
+
+print("\nProcesso concluído (MLP Accidents).")
