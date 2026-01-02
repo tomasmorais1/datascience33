@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Lab 5 – Granularity Exploration
-NEW DATASET: TrafficTwoMonth.csv
-Two extra granularities: HOURLY and WEEKLY
+DATASET: TrafficTwoMonth.csv
+Granularities: 15-Min (Atomic), HOURLY, DAILY
 """
 
 from pathlib import Path
@@ -12,82 +12,111 @@ from dslabs_functions import plot_line_chart
 
 DATAFILE = "TrafficTwoMonth.csv"
 OUTPUT_DIR = Path("images/CORRECT")
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-TARGET = "Total"   # traffic count column
-
+TARGET = "Total"  # A coluna que queremos analisar (Soma de carros/bikes/etc)
 
 # ---------------------------------------------------
-# Helper: unified timestamp builder
+# Helper: criar timestamp contínuo
 # ---------------------------------------------------
 def build_timestamp(df):
     """
-    Dataset has 5952 rows recorded every 15 minutes.
-    We reconstruct a continuous timestamp.
+    O dataset tem registos a cada 15 minutos.
+    A coluna 'Date' só tem o dia (ex: 10), o que causa confusão entre meses.
+    Vamos recriar um índice temporal contínuo para garantir que o gráfico fica perfeito.
+    
+    Começamos em 2023-10-10 porque no CSV o dia 10 é uma 'Tuesday', 
+    e 10 de Outubro de 2023 foi uma Terça-feira.
     """
     df = df.copy()
     df["timestamp"] = pd.date_range(
-        start="2023-12-06",   # arbitrary but valid start date
+        start="2023-10-10 00:00:00", 
         periods=len(df),
         freq="15min"
     )
     return df
-
 
 # ---------------------------------------------------
 # Main
 # ---------------------------------------------------
 def main():
 
-    print("\n=== LAB 5 — GRANULARITY (NEW DATASET) ===\n")
+    print("\n=== LAB 5 — GRANULARITY (Atomic -> Hourly -> Daily) ===\n")
 
-    # Load and prepare data
-    df = pd.read_csv(DATAFILE)
+    # 1. Carregar dados
+    try:
+        # Lemos o ficheiro sem fazer parse de datas, pois vamos gerá-las
+        df = pd.read_csv(DATAFILE)
+    except FileNotFoundError:
+        print(f"Erro: Ficheiro {DATAFILE} não encontrado.")
+        return
+
+    # 2. Construir timestamps e ordenar
     df = build_timestamp(df)
     df = df.sort_values("timestamp")
 
-    # Build base time series (15-minute data)
+    # 3. Criar Série Base (15-minutos - Atomic)
     base_ts = df.set_index("timestamp")[TARGET]
 
-    # Aggregations
-    hourly_ts = base_ts.resample("H").sum()
-    weekly_ts = base_ts.resample("W").sum()
+    # 4. Agregações (Resampling)
+    # Usamos .sum() porque 'Total' é um volume de tráfego. 
+    # Queremos saber quantos carros passaram no total naquela hora/dia.
+    hourly_ts = base_ts.resample("H").sum().dropna()
+    daily_ts = base_ts.resample("D").sum().dropna()
 
-    print("Base points (15 min):", len(base_ts))
-    print("Hourly points:", len(hourly_ts))
-    print("Weekly points:", len(weekly_ts))
+    print(f"Registos de Tráfego:")
+    print(f" - 15-Min (Atomic): {len(base_ts)}")
+    print(f" - Hourly:          {len(hourly_ts)}")
+    print(f" - Daily:           {len(daily_ts)}")
+    print("---")
 
-    # Plot: HOURLY
+    # --- PLOT 1: 15-MIN (Atomic) ---
+    fig = plt.figure(figsize=(12, 4))
+    ax = fig.gca()
+    plot_line_chart(
+        base_ts.index,
+        base_ts.values,
+        title="Traffic – 15-Min Intervals (Atomic)",
+        xlabel="Time",
+        ylabel="Traffic Count",
+        ax=ax
+    )
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "granularity_1_15min.png")
+    plt.close()
+    print("Saved: granularity_1_15min.png")
+
+    # --- PLOT 2: HOURLY ---
     fig = plt.figure(figsize=(12, 4))
     ax = fig.gca()
     plot_line_chart(
         hourly_ts.index,
         hourly_ts.values,
         title="Traffic – Hourly Total Counts",
-        xlabel="time",
-        ylabel="traffic per hour",
+        xlabel="Time",
+        ylabel="Traffic per Hour",
         ax=ax
     )
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "granularity_hourly.png")
+    plt.savefig(OUTPUT_DIR / "granularity_2_hourly.png")
     plt.close()
-    print("Saved: images/CORRECT/granularity_hourly.png")
+    print("Saved: granularity_2_hourly.png")
 
-    # Plot: WEEKLY
+    # --- PLOT 3: DAILY ---
     fig = plt.figure(figsize=(12, 4))
     ax = fig.gca()
     plot_line_chart(
-        weekly_ts.index,
-        weekly_ts.values,
-        title="Traffic – Weekly Total Counts",
-        xlabel="time",
-        ylabel="traffic per week",
+        daily_ts.index,
+        daily_ts.values,
+        title="Traffic – Daily Total Counts",
+        xlabel="Time",
+        ylabel="Traffic per Day",
         ax=ax
     )
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "granularity_weekly.png")
+    plt.savefig(OUTPUT_DIR / "granularity_3_daily.png")
     plt.close()
-    print("Saved: images/CORRECT/granularity_weekly.png")
+    print("Saved: granularity_3_daily.png")
 
     print("\n=== DONE ===\n")
 

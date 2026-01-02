@@ -1,143 +1,85 @@
 #!/usr/bin/env python3
 """
-Lab 5 – Distribution + Autocorrelation Exploration
-Dataset: economic_indicators_dataset_2010_2023.csv
-Granularities: Monthly, Quarterly, Annual
+Lab 5 – Autocorrelation Study
+DATASET: economic_indicators_dataset_2010_2023.csv
+Granularity: DAILY
 """
 
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-# Assumindo que dslabs_functions, HEIGHT, plot_multiline_chart, set_chart_labels estão disponíveis
-from dslabs_functions import HEIGHT, plot_multiline_chart, set_chart_labels
+from matplotlib.gridspec import GridSpec
+from dslabs_functions import HEIGHT
 
-# --- VARIÁVEIS DO NOVO DATASET ---
 DATAFILE = "economic_indicators_dataset_2010_2023.csv"
-OUTPUT_DIR = Path("images_profiling") # Mantendo o diretório que usou no exemplo anterior
-OUTPUT_DIR.mkdir(exist_ok=True)
-
 TARGET = "Inflation Rate (%)"
 COUNTRY_FILTER = "USA"
 
-# Removida a função build_timestamp (já usamos a coluna 'Date')
+OUTPUT_DIR = Path("images/autocorr_economic")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# --------------------------------------------------------
+# Autocorrelation Function (Mesma lógica)
+# --------------------------------------------------------
+def autocorrelation_study(series, max_lag, delta=1, file_tag="economic"):
+    k = int(max_lag / delta)
+    fig = plt.figure(figsize=(4 * HEIGHT, 2 * HEIGHT), constrained_layout=True)
+    gs = GridSpec(2, k, figure=fig)
 
-# ----------------- Lag helper -----------------
-def lagged_series(series, max_lag: int):
-    lags = {"original": series}
-    for lag in range(1, max_lag + 1):
-        # O nome do lag deve refletir a granularidade (ex: lag_1M, lag_1Q, etc.)
-        lags[f"lag_{lag}"] = series.shift(lag)
-    return lags
+    series_values = series.tolist()
+    
+    # Lag Plots
+    for i in range(1, k + 1):
+        ax = fig.add_subplot(gs[0, i - 1])
+        lag = i * delta
+        ax.scatter(series.shift(lag).tolist(), series_values, alpha=0.5, s=15)
+        ax.set_xlabel(f"lag {lag}")
+        ax.set_ylabel("original")
+        ax.set_title(f"Lag {lag}")
 
+    # Correlogram
+    ax_corr = fig.add_subplot(gs[1, :])
+    ax_corr.acorr(series.astype(float), maxlags=max_lag, usevlines=True, normed=True)
+    ax_corr.set_title(f"Autocorrelation Correlogram ({file_tag})")
+    ax_corr.set_xlabel("Lags")
+    ax_corr.grid(True)
+    
+    return fig
 
-# ----------------- Main -----------------
+# --------------------------------------------------------
+# Main
+# --------------------------------------------------------
 def main():
+    print("\n=== AUTOCORRELATION STUDY (ECONOMIC) ===\n")
 
-    print("\n=== LAB 5 — DISTRIBUTION + AUTOCORRELATION (MACRO DATA) ===\n")
-
-    # Load dataset
+    # Load
     try:
-        # Carregar e garantir que a coluna Date é um datetime
         df = pd.read_csv(DATAFILE, parse_dates=['Date'])
-    except FileNotFoundError:
-        print(f"Erro: O ficheiro {DATAFILE} não foi encontrado.")
-        return
-    except KeyError:
-        print("Erro: A coluna 'Date' não foi encontrada no ficheiro.")
+    except:
+        print("Erro ao carregar ficheiro.")
         return
 
-    # 1. Filtrar pelo País (USA)
-    df_filtered = df[df['Country'] == COUNTRY_FILTER].copy()
+    # Filter USA & Daily
+    df = df[df['Country'] == COUNTRY_FILTER].sort_values("Date")
+    ts = df.set_index("Date")[TARGET].dropna()
+    
+    if ts.empty: return
 
-    if df_filtered.empty:
-        print(f"Aviso: Não foram encontrados dados para o país '{COUNTRY_FILTER}'.")
-        return
+    print(f"Série Diária: {len(ts)} pontos.")
 
-    # 2. Base series e remoção de NaNs
-    df_filtered = df_filtered.sort_values("Date")
-    base_ts = df_filtered.set_index("Date")[TARGET].dropna()
-
-
-    # 3. Aggregations (M = Monthly, Q = Quarterly, A = Annual)
-    # Usamos .mean() para taxas como a Inflação
-    granularities = {
-        "Monthly": base_ts.resample("M").mean(),
-        "Quarterly": base_ts.resample("Q").mean(),
-        "Annual": base_ts.resample("A").mean()
-    }
-
-    names = list(granularities.keys())
-    series_list = list(granularities.values())
-
-    # ---------------- Boxplots ----------------
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        axs[i].boxplot(series.dropna()) # Usar dropna() para boxplots
-        set_chart_labels(axs[i], title=f"{names[i]} Inflation Boxplot ({COUNTRY_FILTER})",
-                         ylabel="Inflation Rate (%)")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "distribution_boxplots_inflation.png")
+    # --- GENERATION ---
+    # Max Lag = 20 (analisar dependência a curto prazo)
+    # Delta = 4 (Lags: 4, 8, 12, 16, 20)
+    print("Generating Autocorrelation Plots...")
+    
+    fig = autocorrelation_study(ts, max_lag=20, delta=4, file_tag="Inflation USA")
+    
+    save_path = OUTPUT_DIR / "economic_autocorrelation.png"
+    fig.savefig(save_path)
     plt.close()
-    print("Saved: images_profiling/distribution_boxplots_inflation.png")
-
-    # ---------------- Histograms ----------------
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        axs[i].hist(series.dropna().values, bins=10, edgecolor="black") # Ajustei bins
-        set_chart_labels(axs[i],
-                         title=f"{names[i]} Inflation Histogram ({COUNTRY_FILTER})",
-                         xlabel="Inflation Rate (%)",
-                         ylabel="Frequency")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "distribution_histograms_inflation.png")
-    plt.close()
-    print("Saved: images_profiling/distribution_histograms_inflation.png")
-
-    # ---------------- Lag Plots (Series no Tempo) ----------------
-    # O lag plot para visualização no tempo não é o Scatter Plot (Autocorrelação),
-    # é um gráfico de linhas de séries temporais atrasadas.
-    # Usamos max_lag=2 para evitar sobreposição excessiva para visualização
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        # É importante usar dropna() após o shift
-        lags = lagged_series(series.dropna(), max_lag=2)
-        plot_multiline_chart(
-            lags["original"].index, # O índice é sempre da série original (sem shift)
-            lags,
-            ax=axs[i],
-            title=f"{names[i]} Lag Plots ({COUNTRY_FILTER})",
-            ylabel="Inflation Rate (%)",
-        )
-
-        # Make all lines thinner
-        for line in axs[i].lines:
-            line.set_linewidth(0.8)
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "lag_plots_line_inflation.png")
-    plt.close()
-    print("Saved: images_profiling/lag_plots_line_inflation.png")
-
-    # ---------------- Autocorrelation (ACF Plot) ----------------
-    # Plot Scatter (ACF) - Aqui é onde se mede a autocorrelação
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        # autocorrelation_plot usa a série temporal e plota os coeficientes ACF
-        pd.plotting.autocorrelation_plot(series.dropna(), ax=axs[i])
-        axs[i].set_title(f"{names[i]} Autocorrelation ({COUNTRY_FILTER})")
-        # Ajustar o limite de lags (para séries anuais, um lag de 10-15 anos é suficiente)
-        if names[i] == "Annual":
-            max_lags_plot = 15
-            axs[i].set_xlim(0, max_lags_plot)
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "autocorr_acf_inflation.png")
-    plt.close()
-    print("Saved: images_profiling/autocorr_acf_inflation.png")
-
+    
+    print(f" -> Guardado: {save_path}")
     print("\n=== DONE ===\n")
-
 
 if __name__ == "__main__":
     main()

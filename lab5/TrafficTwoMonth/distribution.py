@@ -1,118 +1,102 @@
 #!/usr/bin/env python3
 """
-Lab 5 – Distribution + Autocorrelation Exploration
-Dataset: TrafficTwoMonth.csv
-Granularities: Hourly, Daily, Weekly
+Lab 5 – Autocorrelation Study
+DATASET: TrafficTwoMonth.csv
+Granularity: HOURLY
 """
 
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-from dslabs_functions import HEIGHT, plot_multiline_chart, set_chart_labels
+from matplotlib.gridspec import GridSpec
+from dslabs_functions import HEIGHT
 
 DATAFILE = "TrafficTwoMonth.csv"
-OUTPUT_DIR = Path("images/CORRECT")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
 TARGET = "Total"
 
+# Configuração de output
+OUTPUT_DIR = Path("images/autocorr_traffic")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ----------------- Build Timestamp -----------------
+# --------------------------------------------------------
+# 1. Helper: Timestamp Builder (Traffic specific)
+# --------------------------------------------------------
 def build_timestamp(df):
-    """Create continuous timestamps every 15 minutes."""
     df = df.copy()
-    base = pd.date_range(
-        start="2023-12-06",
+    # Começa a 10 de Outubro de 2023 (Terça-feira)
+    df["timestamp"] = pd.date_range(
+        start="2023-10-10 00:00:00",
         periods=len(df),
         freq="15min"
     )
-    df["timestamp"] = base
     return df
 
+# --------------------------------------------------------
+# 2. Autocorrelation Study Function (Estilo do Stor)
+# --------------------------------------------------------
+def autocorrelation_study(series, max_lag, delta=1, file_tag="traffic"):
+    """
+    Gera Lag-Plots (Scatter) e Correlograma.
+    """
+    k = int(max_lag / delta)
+    fig = plt.figure(figsize=(4 * HEIGHT, 2 * HEIGHT), constrained_layout=True)
+    gs = GridSpec(2, k, figure=fig)
 
-# ----------------- Lag helper -----------------
-def lagged_series(series, max_lag: int):
-    lags = {"original": series}
-    for lag in range(1, max_lag + 1):
-        lags[f"lag_{lag}"] = series.shift(lag)
-    return lags
+    series_values = series.tolist()
+    
+    # 1. Lag Plots (Scatter) - Linha de cima
+    for i in range(1, k + 1):
+        ax = fig.add_subplot(gs[0, i - 1])
+        lag = i * delta
+        # Scatter: x=t-lag, y=t
+        ax.scatter(series.shift(lag).tolist(), series_values, alpha=0.5, s=10)
+        ax.set_xlabel(f"lag {lag}")
+        ax.set_ylabel("original")
+        ax.set_title(f"Lag {lag}")
 
+    # 2. Correlogram (Autocorrelation) - Linha de baixo (Ocupa toda a largura)
+    ax_corr = fig.add_subplot(gs[1, :])
+    # maxlags define até onde vai o gráfico
+    ax_corr.acorr(series.astype(float), maxlags=max_lag, usevlines=True, normed=True)
+    ax_corr.set_title(f"Autocorrelation Correlogram ({file_tag})")
+    ax_corr.set_xlabel("Lags")
+    ax_corr.grid(True)
+    
+    return fig
 
-# ----------------- Main -----------------
+# --------------------------------------------------------
+# Main
+# --------------------------------------------------------
 def main():
+    print("\n=== AUTOCORRELATION STUDY (TRAFFIC) ===\n")
 
-    print("\n=== LAB 5 — DISTRIBUTION + AUTOCORRELATION (NEW DATASET) ===\n")
+    # Load & Prepare
+    try:
+        df = pd.read_csv(DATAFILE)
+    except FileNotFoundError:
+        print("Erro: Ficheiro não encontrado.")
+        return
 
-    # Load dataset
-    df = pd.read_csv(DATAFILE)
-    df = build_timestamp(df)
-    df = df.sort_values("timestamp")
+    df = build_timestamp(df).sort_values("timestamp")
+    
+    # Usar HOURLY para ver ciclos diários (24h)
+    ts_hourly = df.set_index("timestamp")[TARGET].resample("H").sum().dropna()
+    
+    print(f"Série Horária: {len(ts_hourly)} pontos.")
 
-    # Base series (15-min)
-    base_ts = df.set_index("timestamp")[TARGET]
-
-    # Aggregations
-    granularities = {
-        "Hourly": base_ts.resample("H").sum(),
-        "Daily": base_ts.resample("D").sum(),
-        "Weekly": base_ts.resample("W").sum()
-    }
-
-    names = list(granularities.keys())
-    series_list = list(granularities.values())
-
-    # ---------------- Boxplots ----------------
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        axs[i].boxplot(series)
-        set_chart_labels(axs[i], title=f"{names[i]} Boxplot")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "distribution_boxplots_all.png")
+    # --- FIGURE 73 & 75 GENERATION ---
+    # Max Lag = 24 (para ver o ciclo completo de um dia)
+    # Delta = 4 (mostra lags 4, 8, 12, 16, 20, 24) para não encher demasiado
+    print("Generating Autocorrelation Plots...")
+    
+    fig = autocorrelation_study(ts_hourly, max_lag=24, delta=4, file_tag="Traffic Hourly")
+    
+    save_path = OUTPUT_DIR / "traffic_autocorrelation.png"
+    fig.savefig(save_path)
     plt.close()
-    print("Saved: distribution_boxplots_all.png")
-
-    # ---------------- Histograms ----------------
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        axs[i].hist(series.values, bins=20, edgecolor="black")
-        set_chart_labels(axs[i], title=f"{names[i]} Histogram", xlabel="Counts", ylabel="Frequency")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "distribution_histograms_all.png")
-    plt.close()
-    print("Saved: distribution_histograms_all.png")
-
-    # ---------------- Lag Plots ----------------
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        lags = lagged_series(series, max_lag=5)
-        plot_multiline_chart(
-            series.index,
-            lags,
-            ax=axs[i],
-            title=f"{names[i]} Lag Plots"
-        )
-
-        # Make all lines thinner
-        for line in axs[i].lines:
-            line.set_linewidth(0.8)
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "lag_plots_all.png")
-    plt.close()
-    print("Saved: lag_plots_all.png")
-
-    # ---------------- Autocorrelation ----------------
-    fig, axs = plt.subplots(1, 3, figsize=(3 * HEIGHT, HEIGHT))
-    for i, series in enumerate(series_list):
-        pd.plotting.autocorrelation_plot(series, ax=axs[i])
-        axs[i].set_title(f"{names[i]} Autocorrelation")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "autocorr_all.png")
-    plt.close()
-    print("Saved: autocorr_all.png")
-
+    
+    print(f" -> Guardado: {save_path}")
     print("\n=== DONE ===\n")
-
 
 if __name__ == "__main__":
     main()

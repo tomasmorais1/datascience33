@@ -2,118 +2,121 @@
 """
 Lab 5 – Granularity Exploration
 NEW DATASET: economic_indicators_dataset_2010_2023.csv
-Three extra granularities: ANNUAL, MONTHLY, and QUARTERLY
+Granularities: DAILY (Atomic), MONTHLY, QUARTERLY, ANNUAL
 """
 
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-from dslabs_functions import plot_line_chart # Assumindo que esta função está disponível
+from dslabs_functions import plot_line_chart, HEIGHT  # Importar HEIGHT se disponível, senão definir manualmente
 
 DATAFILE = "economic_indicators_dataset_2010_2023.csv"
 OUTPUT_DIR = Path("images_profiling")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-TARGET = "Inflation Rate (%)"  # Nova coluna target
-COUNTRY_FILTER = "USA"        # País que queremos analisar
+TARGET = "Inflation Rate (%)"
+COUNTRY_FILTER = "USA"
 
-
-# ---------------------------------------------------
-# Main
-# ---------------------------------------------------
 def main():
+    print("\n=== LAB 5 — GRANULARITY STUDY ===\n")
 
-    print("\n=== LAB 5 — GRANULARITY (NEW DATASET: Monthly, Quarterly, Annual) ===\n")
-
-    # Load and prepare data
+    # 1. Load Data
     try:
-        # Carregar e garantir que a coluna Date é um datetime
         df = pd.read_csv(DATAFILE, parse_dates=['Date'])
     except FileNotFoundError:
         print(f"Erro: O ficheiro {DATAFILE} não foi encontrado.")
         return
     except KeyError:
-        print("Erro: A coluna 'Date' não foi encontrada no ficheiro.")
+        print("Erro: A coluna 'Date' não foi encontrada.")
         return
             
-    # 1. Filtrar pelo País (USA)
+    # 2. Filter by Country and Sort
     df_filtered = df[df['Country'] == COUNTRY_FILTER].copy()
-
     if df_filtered.empty:
-        print(f"Aviso: Não foram encontrados dados para o país '{COUNTRY_FILTER}'.")
+        print(f"Aviso: Sem dados para '{COUNTRY_FILTER}'.")
         return
 
-    # 2. Ordenar e definir a série temporal base (Diária)
     df_filtered = df_filtered.sort_values("Date")
-    # Remover valores nulos antes de agregar
+    
+    # 3. Define Base Series (Most Atomic - Daily)
+    # Removemos NaNs da base para limpar os dados brutos
     base_ts = df_filtered.set_index("Date")[TARGET].dropna()
         
     if base_ts.empty:
-        print("Erro: A série temporal base está vazia após a filtragem de NaNs.")
+        print("Erro: Série temporal vazia.")
         return
         
-    # Aggregations: M = Monthly, Q = Quarterly, A = Annual
-    # Usamos .mean() para taxas
-    monthly_ts = base_ts.resample("M").mean()
-    quarterly_ts = base_ts.resample("Q").mean() # NOVO: Trimestral
-    annual_ts = base_ts.resample("A").mean()
+    # 4. Aggregations
+    # O .dropna() aqui é CRUCIAL para evitar os cortes na linha do gráfico
+    # se houver meses/trimestres sem dados.
+    monthly_ts = base_ts.resample("M").mean().dropna()
+    quarterly_ts = base_ts.resample("Q").mean().dropna()
+    annual_ts = base_ts.resample("A").mean().dropna()
 
-    print(f"Base points (Daily, {COUNTRY_FILTER}):", len(base_ts))
-    print("Monthly points:", len(monthly_ts))
-    print("Quarterly points:", len(quarterly_ts))
-    print("Annual points:", len(annual_ts))
+    print(f"Records for {COUNTRY_FILTER}:")
+    print(f" - Daily (Atomic): {len(base_ts)}")
+    print(f" - Monthly:        {len(monthly_ts)}")
+    print(f" - Quarterly:      {len(quarterly_ts)}")
+    print(f" - Annual:         {len(annual_ts)}")
     print("---")
 
-    # --- Plot: MONTHLY ---
-    fig = plt.figure(figsize=(12, 4))
-    ax = fig.gca()
+    # --- PLOT 1: DAILY (Atomic) ---
+    plt.figure(figsize=(12, 4))
     plot_line_chart(
-        monthly_ts.index,
-        monthly_ts.values,
-        title=f"Inflation Rate ({COUNTRY_FILTER}) – Monthly Average",
-        xlabel="Time (Monthly)",
-        ylabel="Avg. Inflation Rate (%)",
-        ax=ax
+        base_ts.index.to_list(),
+        base_ts.to_list(),
+        title=f"{COUNTRY_FILTER} - {TARGET} (Daily/Atomic)",
+        xlabel="Date",
+        ylabel=TARGET
     )
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "granularity_monthly_inflation.png")
+    plt.savefig(OUTPUT_DIR / "granularity_1_daily.png")
     plt.close()
-    print(f"Saved: {OUTPUT_DIR}/granularity_monthly_inflation.png")
-    
-    # --- Plot: QUARTERLY (NOVO) ---
-    fig = plt.figure(figsize=(12, 4))
-    ax = fig.gca()
+    print("Generated: daily chart")
+
+    # --- PLOT 2: MONTHLY ---
+    plt.figure(figsize=(12, 4))
     plot_line_chart(
-        quarterly_ts.index,
-        quarterly_ts.values,
-        title=f"Inflation Rate ({COUNTRY_FILTER}) – Quarterly Average",
-        xlabel="Time (Quarterly)",
-        ylabel="Avg. Inflation Rate (%)",
-        ax=ax
+        monthly_ts.index.to_list(),
+        monthly_ts.to_list(),
+        title=f"{COUNTRY_FILTER} - {TARGET} (Monthly Average)",
+        xlabel="Date",
+        ylabel=TARGET
     )
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "granularity_quarterly_inflation.png")
+    plt.savefig(OUTPUT_DIR / "granularity_2_monthly.png")
     plt.close()
-    print(f"Saved: {OUTPUT_DIR}/granularity_quarterly_inflation.png")
+    print("Generated: monthly chart")
 
-    # --- Plot: ANNUAL ---
-    fig = plt.figure(figsize=(12, 4))
-    ax = fig.gca()
+    # --- PLOT 3: QUARTERLY ---
+    plt.figure(figsize=(12, 4))
     plot_line_chart(
-        annual_ts.index,
-        annual_ts.values,
-        title=f"Inflation Rate ({COUNTRY_FILTER}) – Annual Average",
-        xlabel="Time (Annual)",
-        ylabel="Avg. Inflation Rate (%)",
-        ax=ax
+        quarterly_ts.index.to_list(),
+        quarterly_ts.to_list(),
+        title=f"{COUNTRY_FILTER} - {TARGET} (Quarterly Average)",
+        xlabel="Date",
+        ylabel=TARGET
     )
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "granularity_annual_inflation.png")
+    plt.savefig(OUTPUT_DIR / "granularity_3_quarterly.png")
     plt.close()
-    print(f"Saved: {OUTPUT_DIR}/granularity_annual_inflation.png")
+    print("Generated: quarterly chart")
 
-    print("\n=== DONE ===\n")
+    # --- PLOT 4: ANNUAL ---
+    plt.figure(figsize=(12, 4))
+    plot_line_chart(
+        annual_ts.index.to_list(),
+        annual_ts.to_list(),
+        title=f"{COUNTRY_FILTER} - {TARGET} (Annual Average)",
+        xlabel="Date",
+        ylabel=TARGET
+    )
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "granularity_4_annual.png")
+    plt.close()
+    print("Generated: annual chart")
 
+    print("\n=== DONE ===")
 
 if __name__ == "__main__":
     main()

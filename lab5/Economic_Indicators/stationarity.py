@@ -1,149 +1,154 @@
 #!/usr/bin/env python3
 """
-Lab 5 – Stationarity Exploration
-NEW MacroeconomicData dataset
-Granularities: Monthly, Quarterly, Annual
+Lab 5 – Components & Stationarity Exploration
+DATASET: economic_indicators_dataset_2010_2023.csv
 """
 
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
+from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import adfuller
-from dslabs_functions import plot_line_chart # Assumindo que esta função está disponível
+from dslabs_functions import plot_line_chart, set_chart_labels, HEIGHT
 
-# --- VARIÁVEIS DO NOVO DATASET ---
 DATAFILE = "economic_indicators_dataset_2010_2023.csv"
 TARGET = "Inflation Rate (%)"
 COUNTRY_FILTER = "USA"
 
-OUTPUT_DIR = Path("images_profiling")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-
-# --------------------------------------------------------
-# Removida a função build_timestamp (já usamos a coluna 'Date')
-# --------------------------------------------------------
+# --- CORREÇÃO DE CAMINHO ---
+# Isto garante que a pasta 'images' é criada AO LADO deste script .py,
+# independentemente de onde executas o comando no terminal.
+OUTPUT_DIR = Path(__file__).parent / "images/components_economic"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------
-# ADF test helper (Mantida, pois é genérica)
+# Functions
 # --------------------------------------------------------
-def eval_adf(series):
-    # O teste ADF é sensível a NaNs, por isso usamos dropna()
-    series = series.dropna()
-
-    # Se a série estiver vazia após dropna, retorna um resultado indicativo de não-estacionariedade
-    if series.empty:
-        return {
-            "ADF Statistic": float('nan'),
-            "p-value": 1.0,
-            "1%": float('nan'),
-            "5%": float('nan'),
-            "10%": float('nan'),
-            "stationary": False
-        }
-
-    result = adfuller(series, autolag='AIC')
-
-    return {
-        "ADF Statistic": result[0],
-        "p-value": result[1],
-        "1%": result[4]["1%"],
-        "5%": result[4]["5%"],
-        "10%": result[4]["10%"],
-        # Uma série é considerada estacionária se p-value <= 0.05
-        "stationary": (result[1] <= 0.05)
+def plot_components(series, title="", x_label="time", y_label="", period=30):
+    decomposition = seasonal_decompose(series, model="add", period=period)
+    
+    components = {
+        "observed": series,
+        "trend": decomposition.trend,
+        "seasonal": decomposition.seasonal,
+        "residual": decomposition.resid,
     }
+    rows = len(components)
+    fig, axs = plt.subplots(rows, 1, figsize=(3 * HEIGHT, rows * HEIGHT))
+    fig.suptitle(f"{title}")
+    
+    i = 0
+    for key in components:
+        set_chart_labels(axs[i], title=key, xlabel=x_label, ylabel=y_label)
+        axs[i].plot(components[key])
+        i += 1
+    plt.tight_layout()
+    return fig
 
+def eval_stationarity(series):
+    series = series.dropna()
+    result = adfuller(series)
+    print(f"ADF Statistic: {result[0]:.3f}")
+    print(f"p-value: {result[1]:.3f}")
+    print("Critical Values:")
+    for key, value in result[4].items():
+        print(f"\t{key}: {value:.3f}")
+    return result[1] <= 0.05
+
+def plot_stationary_study(series, title=""):
+    n = len(series)
+    
+    # 1. Global Mean
+    fig1 = plt.figure(figsize=(3 * HEIGHT, HEIGHT))
+    plot_line_chart(series.index.to_list(), series.to_list(),
+                    xlabel=series.index.name, ylabel=series.name,
+                    title=f"{title} (Global Mean)")
+    plt.plot(series.index, [series.mean()] * n, "r-", label="mean", linewidth=3)
+    plt.legend()
+    
+    # 2. Segmented Mean
+    BINS = 10
+    mean_line = []
+    step = n // BINS
+    if step < 1: step = 1
+        
+    for i in range(BINS):
+        segment = series[i * step : (i + 1) * step]
+        if len(segment) > 0:
+            mean_value = [segment.mean()] * len(segment)
+            mean_line += mean_value
+            
+    if len(mean_line) < n:
+        mean_line += [mean_line[-1]] * (n - len(mean_line))
+    
+    fig2 = plt.figure(figsize=(3 * HEIGHT, HEIGHT))
+    plot_line_chart(series.index.to_list(), series.to_list(),
+                    xlabel=series.index.name, ylabel=series.name,
+                    title=f"{title} (Segmented Mean)")
+    plt.plot(series.index, mean_line, "r-", label="segmented mean", linewidth=3)
+    plt.legend()
+    
+    return fig1, fig2
 
 # --------------------------------------------------------
 # Main
 # --------------------------------------------------------
 def main():
+    print("\n=== COMPONENTS & STATIONARITY (ECONOMIC) ===\n")
+    print(f"A guardar imagens em: {OUTPUT_DIR.resolve()}") # Debug Path
 
-    print("\n=== LAB 5 — STATIONARITY (MACRO DATA) ===\n")
-
-    # Load + filter
+    # Load
     try:
-        # Carregar e garantir que a coluna Date é um datetime
-        df = pd.read_csv(DATAFILE, parse_dates=['Date'])
-    except FileNotFoundError:
-        print(f"Erro: O ficheiro {DATAFILE} não foi encontrado.")
-        return
-    except KeyError:
-        print("Erro: A coluna 'Date' ou 'Country' não foi encontrada no ficheiro.")
-        return
-
-    # Filtrar pelo País (USA)
-    df_filtered = df[df['Country'] == COUNTRY_FILTER].copy()
-    if df_filtered.empty:
-        print(f"Aviso: Não foram encontrados dados para o país '{COUNTRY_FILTER}'.")
+        # Tenta carregar usando o caminho relativo ao script também
+        file_path = Path(__file__).parent / DATAFILE
+        if not file_path.exists():
+            file_path = DATAFILE # Tenta no diretório atual se falhar
+            
+        df = pd.read_csv(file_path, parse_dates=['Date'])
+    except Exception as e:
+        print(f"Erro ao carregar ficheiro: {e}")
         return
 
-    # Base series (Diária) e preparação
-    df_filtered = df_filtered.sort_values("Date")
-    base_ts = df_filtered.set_index("Date")[TARGET].dropna() # Remove NaNs da base
+    # Filter & Sort
+    df = df[df['Country'] == COUNTRY_FILTER].sort_values("Date")
+    ts = df.set_index("Date")[TARGET].dropna()
+    ts.name = TARGET
 
-    if base_ts.empty:
-        print("Erro: A série temporal base está vazia após a filtragem de NaNs.")
+    if ts.empty:
+        print("Série vazia.")
         return
 
-    # Aggregations (M = Monthly, Q = Quarterly, A = Annual)
-    # Usamos .mean() para taxas como a Inflação
-    ts_monthly = base_ts.resample("M").mean()
-    ts_quarterly = base_ts.resample("Q").mean()
-    ts_annual = base_ts.resample("A").mean()
+    print(f"Número de observações: {len(ts)}")
 
-    granularities = {
-        "Monthly": ts_monthly,
-        "Quarterly": ts_quarterly,
-        "Annual": ts_annual
-    }
-
-    # Run ADF + Plot
-    for name, series in granularities.items():
-
-        # Os gráficos que viu antes com grandes saltos são causados por NaNs.
-        # Para o teste ADF e para a plotagem, a série deve ser tratada.
-        # Vamos usar .interpolate() apenas para a plotagem, para preencher os gaps visuais.
-        series_filled_for_plot = series.interpolate(method='linear')
-        
-        print(f"\n--- {name} ---")
-        # O teste ADF é executado na série original (resample, mas sem interpolação)
-        res = eval_adf(series)
-
-        print(f"ADF Statistic: {res['ADF Statistic']:.4f}")
-        print(f"p-value: {res['p-value']:.6f}")
-        print(f"Critical Values:")
-        print(f"  1%:  {res['1%']}")
-        print(f"  5%:  {res['5%']}")
-        print(f"  10%: {res['10%']}")
-        print(f"Stationary (p<=0.05)?  {res['stationary']}")
-
-        # Plot series + mean line
-        fig = plt.figure(figsize=(12, 4))
-        ax = fig.gca()
-
-        plot_line_chart(
-            series_filled_for_plot.index, # Usar a série interpolada para a visualização
-            series_filled_for_plot.values,
-            title=f"Inflation Rate ({COUNTRY_FILTER}) – {name} Series (Stationarity Check)",
-            xlabel="Time",
-            ylabel=TARGET,
-            ax=ax
-        )
-
-        # Mean line
-        ax.axhline(series_filled_for_plot.mean(), color="red", linestyle="--", label="Mean")
-        ax.legend()
-
-        plt.tight_layout()
-        plt.savefig(OUTPUT_DIR / f"stationarity_inflation_{name.lower()}.png")
+    # --- 1. Components Decomposition ---
+    print("Generating Decomposition...")
+    try:
+        # Period=12 para dados mensais/poucos dados
+        fig_decomp = plot_components(ts, title=f"Inflation {COUNTRY_FILTER}", period=12)
+        save_path = OUTPUT_DIR / "economic_components.png"
+        fig_decomp.savefig(save_path)
         plt.close()
+        print(f" -> Guardado: {save_path.name}")
+    except ValueError as e:
+        print(f"Erro no Decomposition: {e}")
 
-        print(f"Saved: {OUTPUT_DIR}/stationarity_inflation_{name.lower()}.png")
+    # --- 2. Stationarity Visuals ---
+    print("Generating Stationarity Plots...")
+    fig_glob, fig_seg = plot_stationary_study(ts, title=f"Inflation {COUNTRY_FILTER}")
+    
+    fig_glob.savefig(OUTPUT_DIR / "economic_stationarity_global.png")
+    fig_seg.savefig(OUTPUT_DIR / "economic_stationarity_segmented.png")
+    plt.close()
+    plt.close()
+    print(" -> Gráficos de estacionaridade guardados.")
 
-    print("\n=== DONE ===\n")
+    # --- 3. ADF Test ---
+    print("\n--- ADF Test Results (Economic) ---")
+    is_stationary = eval_stationarity(ts)
+    print(f"The series {('is' if is_stationary else 'is NOT')} stationary.")
 
+    print(f"\n=== DONE ===\nVerifica a pasta: {OUTPUT_DIR.resolve()}\n")
 
+# --- IMPORTANTE: ISTO FAZ O CÓDIGO CORRER ---
 if __name__ == "__main__":
     main()
